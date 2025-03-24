@@ -78,6 +78,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
+name = "base65536"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3f77451458eb583269092b64b828dab4ff6ab995477c3ceaec8586dfdd2b9eee"
+dependencies = [
+ "fnv",
+ "lazy_static",
+]
+
+[[package]]
 name = "bindgen"
 version = "0.69.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -690,9 +700,13 @@ dependencies = [
 name = "mushi"
 version = "0.1.0"
 dependencies = [
+ "base65536",
  "bytes",
+ "idna",
  "rcgen",
+ "ring",
  "thiserror 2.0.12",
+ "time",
  "url",
  "web-transport-quinn",
 ]

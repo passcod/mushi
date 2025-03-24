@@ -35,7 +35,7 @@ In the end, Mushi is:
 On connection establishment, an Endpoint receives the DER-encoded Public Key Information
 block of the other side, and can use that as an opaque identity blob for the remote peer.
 That structure contains both the public key data and an algorithm specifier, which lets
-peers choose from ECDSA or ED25519 as is more convenient for them. (RSA is not allowed.)
+applications choose from ECDSA or ED25519 as is more convenient. (RSA is not allowed.)
 
 ## How do I use this?
 

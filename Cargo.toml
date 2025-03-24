@@ -4,8 +4,19 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+base65536 = "1.0.1"
 bytes = "1.10.1"
+idna = "1.0.3"
 rcgen = "0.13.2"
+ring = "0.17.14"
 thiserror = "2.0.12"
+time = "0.3.41"
 url = "2.5.4"
 web-transport-quinn = "0.5.0"
+
+[features]
+default = ["ed25519"]
+
+ed25519 = []
+ecdsa-256 = []
+ecdsa-384 = []
