@@ -1,6 +1,7 @@
-use std::{net::ToSocketAddrs, sync::Arc};
+use std::{net::{ToSocketAddrs, SocketAddr}, sync::Arc};
 
 pub use web_transport_quinn::{self as web_transport, quinn, quinn::rustls};
+pub use url::Url;
 
 use bytes::{Buf, BufMut, Bytes};
 use quinn::{congestion::ControllerFactory, crypto::rustls::QuicClientConfig};
@@ -20,7 +21,6 @@ use rustls::{
     sign::CertifiedKey,
 };
 use time::{Duration, OffsetDateTime};
-use url::Url;
 use web_transport::ALPN;
 
 #[derive(Debug, Clone)]
@@ -243,9 +243,10 @@ impl ClientCertVerifier for ConnectionAllower {
 
 /// Used to dial outgoing [Session]s or receive incoming [Session]s.
 pub struct Endpoint {
-    client: web_transport::Client,
+    client_config: quinn::ClientConfig,
     server: web_transport::Server,
     key: Arc<EndpointKey>,
+    endpoint: quinn::Endpoint,
 }
 
 impl std::fmt::Debug for Endpoint {
@@ -304,18 +305,34 @@ impl Endpoint {
 
         Ok(Self {
             key,
-            client: web_transport::Client::new(endpoint.clone(), client_config),
-            server: web_transport::Server::new(endpoint),
+            client_config,
+            server: web_transport::Server::new(endpoint.clone()),
+            endpoint,
         })
     }
 
+    /// Get the local address the underlying socket is bound to.
+    pub fn local_addr(&self) -> Result<SocketAddr, Error> {
+        self.endpoint.local_addr().map_err(Error::from)
+    }
+
     /// Connect to a server.
-    pub async fn connect(&self, url: &Url) -> Result<Session, Error> {
-        self.client
-            .connect(url)
-            .await
-            .map(Session::new)
-            .map_err(Error::from)
+    pub async fn connect(&self, addrs: impl ToSocketAddrs) -> Result<Session, Error> {
+        let mut last_err = None;
+        for addr in addrs.to_socket_addrs()? {
+            let url = Url::parse("https://{addr}").unwrap();
+            let conn = self
+                .endpoint
+                .connect_with(self.client_config.clone(), addr, url.host_str().unwrap())?
+                .await?;
+
+            match web_transport::Session::connect(conn, &url).await {
+                Ok(s) => return Ok(Session::new(s)),
+                Err(e) => { last_err = Some(Error::from(e)) }
+            }
+        }
+
+        Err(last_err.unwrap_or(Error::NoAddrs))
     }
 
     /// Accept an incoming connection.
@@ -538,19 +555,31 @@ impl RecvStream {
 /// A WebTransport error.
 ///
 /// The source can either be a session error or a stream error.
-#[derive(Debug, thiserror::Error, Clone)]
+#[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("io error: {0}")]
+    Io(#[from] std::io::Error),
+
     #[error("session error: {0}")]
     Session(#[from] web_transport::SessionError),
 
     #[error("client error: {0}")]
     Client(#[from] web_transport::ClientError),
 
+    #[error("connect error: {0}")]
+    Connect(#[from] quinn::ConnectError),
+
+    #[error("connect error: {0}")]
+    Connection(#[from] quinn::ConnectionError),
+
     #[error("write error: {0}")]
     Write(web_transport::WriteError),
 
     #[error("read error: {0}")]
     Read(web_transport::ReadError),
+
+    #[error("no addresses found")]
+    NoAddrs,
 }
 
 impl From<web_transport::WriteError> for Error {
