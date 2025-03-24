@@ -1,12 +1,8 @@
 # Mushi
 
-_WebTransport with client auth._
+_WebTransport with mutual authentication._
 
-## API
-
-Mushi simply exposes [WebTransport](https://developer.mozilla.org/en-US/docs/Web/API/WebTransport).
-
-## What?
+## What is this?
 
 **[Iroh](https://iroh.computer)** is peer-to-peer QUIC connections with peer-to-peer
 authentication based on ED25519 keys. **Mushi** is client-server QUIC connections with
@@ -43,8 +39,23 @@ peers choose from ECDSA or ED25519 as is more convenient for them. (RSA is not a
 
 ## How do I use this?
 
-Mushi is a Rust crate, with some foreign interfaces for convenience:
+Mushi is [a Rust crate][lib-rust] ([docs][docs-rust]), with some foreign interfaces for
+convenience:
 
-- a Node.js module
-- a Python wheel
-- a CLI tool
+- [a Node.js module][lib-node] ([docs][docs-node])
+- [a Python wheel][lib-python] ([docs][docs-python])
+- [a CLI tool][cli] ([docs][docs-cli])
+
+Mushi is also nothing special: as long as you have TLS-level control for your WebTransport
+implementation, you can play along. Require client certificates, don't validate against web
+PKI, match public keys instead, and prefer issuing short-lived certificates on the fly.
+
+[lib-rust]: https://lib.rs/crate/mushi
+[docs-rust]: https://docs.rs/mushi
+[lib-node]: https://www.npmjs.com/package/mushi
+[docs-node]: https://todo.example.com
+[lib-python]: https://pypi.org/mushi-todo
+[docs-python]: https://todo.example.com
+[cli]: https://lib.rs/crate/mushi-cli
+[docs-cli]: ./docs/CLI.md
+
