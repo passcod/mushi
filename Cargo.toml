@@ -14,9 +14,3 @@ time = "0.3.41"
 url = "2.5.4"
 web-transport-quinn = "0.5.0"
 
-[features]
-default = ["ed25519"]
-
-ed25519 = []
-ecdsa-256 = []
-ecdsa-384 = []

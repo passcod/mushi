@@ -25,6 +25,7 @@ use web_transport::ALPN;
 
 #[derive(Debug, Clone)]
 pub struct EndpointKey {
+    scheme: SigScheme,
     key: Arc<KeyPair>,
 }
 
@@ -35,16 +36,14 @@ impl std::ops::Deref for EndpointKey {
     }
 }
 
-#[cfg(feature = "ed25519")]
-const SIGSCHEME: (SignatureScheme, &rcgen::SignatureAlgorithm) =
+pub type SigScheme = (SignatureScheme, &'static rcgen::SignatureAlgorithm);
+pub const SIGSCHEME_ED25519: SigScheme =
     (SignatureScheme::ED25519, &rcgen::PKCS_ED25519);
-#[cfg(feature = "ecdsa-256")]
-const SIGSCHEME: (SignatureScheme, &rcgen::SignatureAlgorithm) = (
+pub const SIGSCHEME_ECDSA256: SigScheme = (
     SignatureScheme::ECDSA_NISTP256_SHA256,
     &rcgen::PKCS_ECDSA_P256_SHA256,
 );
-#[cfg(feature = "ecdsa-384")]
-const SIGSCHEME: (SignatureScheme, &rcgen::SignatureAlgorithm) = (
+pub const SIGSCHEME_ECDSA384: SigScheme = (
     SignatureScheme::ECDSA_NISTP384_SHA384,
     &rcgen::PKCS_ECDSA_P384_SHA384,
 );
@@ -53,13 +52,18 @@ const MUSHI_TLD: &str = "xn--zqsr9q";
 
 impl EndpointKey {
     pub fn generate() -> Result<Self, rcgen::Error> {
+        Self::generate_for(SIGSCHEME_ED25519)
+    }
+
+    pub fn generate_for(scheme: SigScheme) -> Result<Self, rcgen::Error> {
         Ok(Self {
-            key: Arc::new(KeyPair::generate_for(SIGSCHEME.1)?),
+            scheme,
+            key: Arc::new(KeyPair::generate_for(scheme.1)?),
         })
     }
 
     fn supports_sigschemes(&self, requested: &[SignatureScheme]) -> bool {
-        requested.contains(&SIGSCHEME.0)
+        requested.contains(&self.scheme.0)
     }
 
     fn make_certificate(&self) -> Option<Arc<CertifiedKey>> {
@@ -263,12 +267,12 @@ impl std::fmt::Debug for Endpoint {
 impl Endpoint {
     pub fn new(
         bind_to: impl ToSocketAddrs,
-        key: Arc<KeyPair>,
+        key: EndpointKey,
         allower: Arc<dyn AllowConnection>,
         cc: Option<Arc<(dyn ControllerFactory + Send + Sync + 'static)>>,
     ) -> Result<Self, Error> {
         let provider = Arc::new(rustls::crypto::ring::default_provider());
-        let key = Arc::new(EndpointKey { key });
+        let key = Arc::new(key);
         let allower = Arc::new(ConnectionAllower(allower));
 
         let mut server_config = rustls::ServerConfig::builder_with_provider(provider.clone())
