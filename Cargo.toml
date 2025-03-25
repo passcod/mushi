@@ -11,9 +11,11 @@ rcgen = "0.13.2"
 ring = "0.17.14"
 thiserror = "2.0.12"
 time = "0.3.41"
+tracing = "0.1.41"
 url = "2.5.4"
 web-transport-quinn = "0.5.0"
 
 [dev-dependencies]
 tokio = { version = "1.44.1", features = ["full"] }
+tracing-subscriber = "0.3.19"
 

@@ -1,12 +1,13 @@
-use std::{net::{ToSocketAddrs, SocketAddr}, sync::Arc};
+use std::{net::{ToSocketAddrs, SocketAddr, IpAddr, Ipv6Addr, Ipv4Addr}, sync::Arc};
 
 pub use web_transport_quinn::{self as web_transport, quinn, quinn::rustls};
 pub use url::Url;
 
 use bytes::{Buf, BufMut, Bytes};
-use quinn::{congestion::ControllerFactory, crypto::rustls::QuicClientConfig};
+use quinn::{congestion::ControllerFactory, crypto::rustls::{QuicClientConfig, QuicServerConfig}, ConnectionError};
 use rcgen::{CertificateParams, DistinguishedName as Dn, DnType, KeyPair};
 use rustls::{
+    KeyLogFile,
     DigitallySignedStruct, DistinguishedName, SignatureScheme,
     client::{
         ResolvesClientCert,
@@ -21,7 +22,11 @@ use rustls::{
     sign::CertifiedKey,
 };
 use time::{Duration, OffsetDateTime};
-use web_transport::ALPN;
+use web_transport::{ALPN, SessionError};
+
+pub fn install_crypto_provider() {
+    rustls::crypto::ring::default_provider().install_default().unwrap();
+}
 
 #[derive(Debug, Clone)]
 pub struct EndpointKey {
@@ -291,16 +296,27 @@ impl Endpoint {
             .with_client_cert_resolver(key.clone());
         client_config.alpn_protocols = vec![ALPN.to_vec()];
 
-        let mut client_config =
-            quinn::ClientConfig::new(Arc::new(QuicClientConfig::try_from(client_config).unwrap()));
+        if cfg!(debug_assertions) {
+            server_config.key_log = Arc::new(KeyLogFile::new());
+            client_config.key_log = server_config.key_log.clone();
+        }
+
         let mut transport = quinn::TransportConfig::default();
         if let Some(cc) = cc {
             transport.congestion_controller_factory(cc.clone());
         }
-        client_config.transport_config(transport.into());
+        let transport = Arc::new(transport);
+
+        let mut server_config =
+            quinn::ServerConfig::with_crypto(Arc::new(QuicServerConfig::try_from(server_config).unwrap()));
+        server_config.transport_config(transport.clone());
+
+        let mut client_config =
+            quinn::ClientConfig::new(Arc::new(QuicClientConfig::try_from(client_config).unwrap()));
+        client_config.transport_config(transport);
 
         let mut endpoint =
-            quinn::Endpoint::client(bind_to.to_socket_addrs().unwrap().next().unwrap()).unwrap();
+            quinn::Endpoint::server(server_config, bind_to.to_socket_addrs().unwrap().next().unwrap()).unwrap();
         endpoint.set_default_client_config(client_config.clone());
 
         Ok(Self {
@@ -319,15 +335,24 @@ impl Endpoint {
     /// Connect to a server.
     pub async fn connect(&self, addrs: impl ToSocketAddrs) -> Result<Session, Error> {
         let mut last_err = None;
-        for addr in addrs.to_socket_addrs()? {
-            let url = Url::parse("https://{addr}").unwrap();
+        for mut addr in addrs.to_socket_addrs()? {
+            if addr.ip().is_unspecified() {
+                addr.set_ip(match addr.ip() {
+                    IpAddr::V4(_) => Ipv4Addr::LOCALHOST.into(),
+                    IpAddr::V6(_) => Ipv6Addr::LOCALHOST.into(),
+                });
+            }
+            let url = Url::parse(&format!("https://{addr}")).unwrap();
             let conn = self
                 .endpoint
-                .connect_with(self.client_config.clone(), addr, url.host_str().unwrap())?
+                .connect_with(self.client_config.clone(), addr, "mushi.mushi")?;
+            let conn = conn
                 .await?;
 
             match web_transport::Session::connect(conn, &url).await {
-                Ok(s) => return Ok(Session::new(s)),
+                Ok(s) => {
+                    return Ok(Session::new(s))
+                }
                 Err(e) => { last_err = Some(Error::from(e)) }
             }
         }
@@ -336,16 +361,16 @@ impl Endpoint {
     }
 
     /// Accept an incoming connection.
-    pub async fn accept(&mut self) -> Result<Option<Session>, Error> {
+    pub async fn accept(&mut self) -> Option<Result<Session, Error>> {
         match self.server.accept().await {
-            Some(session) => Ok(Some(
+            Some(session) => Some(
                 session
                     .ok()
                     .await
                     .map(Session::new)
-                    .map_err(|e| Error::Write(e.into()))?,
-            )),
-            None => Ok(None),
+                    .map_err(|e| Error::Write(e.into())),
+            ),
+            None => None,
         }
     }
 
@@ -453,8 +478,11 @@ impl Session {
     }
 
     /// Block until the connection is closed.
-    pub async fn closed(&self) -> Error {
-        self.inner.closed().await.into()
+    pub async fn closed(&self) -> Result<(), Error> {
+        match self.inner.closed().await {
+            SessionError::ConnectionError(ConnectionError::LocallyClosed) => Ok(()),
+            e => Err(Error::Session(e))
+        }
     }
 }
 
