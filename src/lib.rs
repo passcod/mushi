@@ -3,13 +3,16 @@ use std::{
     sync::Arc,
 };
 
+pub use rustls::{
+    CertificateError,
+    pki_types::{SubjectPublicKeyInfoDer, UnixTime},
+};
 pub use url::Url;
 pub use web_transport_quinn::{self as web_transport, quinn, quinn::rustls};
 
 use bytes::{Buf, BufMut, Bytes};
 use quinn::{
-    ApplicationClose,
-    ConnectionError,
+    ApplicationClose, ConnectionError,
     congestion::ControllerFactory,
     crypto::rustls::{QuicClientConfig, QuicServerConfig},
 };
@@ -21,9 +24,7 @@ use rustls::{
         danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier},
     },
     crypto::{CryptoProvider, WebPkiSupportedAlgorithms, verify_tls13_signature},
-    pki_types::{
-        CertificateDer, PrivateKeyDer, ServerName, SubjectPublicKeyInfoDer, UnixTime, alg_id,
-    },
+    pki_types::{CertificateDer, PrivateKeyDer, ServerName, alg_id},
     server::{
         ClientHello, ParsedCertificate, ResolvesServerCert,
         danger::{ClientCertVerified, ClientCertVerifier},
@@ -162,7 +163,7 @@ pub trait AllowConnection: std::fmt::Debug + Send + Sync + 'static {
         &self,
         key: SubjectPublicKeyInfoDer<'_>,
         now: UnixTime,
-    ) -> Result<(), rustls::CertificateError>;
+    ) -> Result<(), CertificateError>;
 
     fn require_client_auth(&self) -> bool {
         true
@@ -177,7 +178,7 @@ impl AllowConnection for AllowAllConnections {
         &self,
         _key: SubjectPublicKeyInfoDer<'_>,
         _now: UnixTime,
-    ) -> Result<(), rustls::CertificateError> {
+    ) -> Result<(), CertificateError> {
         Ok(())
     }
 }

@@ -1,4 +1,4 @@
-use std::sync::{LazyLock, Arc};
+use std::sync::{Arc, LazyLock};
 
 use mushi::{AllowAllConnections, Endpoint, EndpointKey, Error};
 use tokio::task::{JoinHandle, spawn};
@@ -134,4 +134,3 @@ async fn ecdsa256_ed25519() {
     end1.connect(addr).await.unwrap();
     task.abort();
 }
-

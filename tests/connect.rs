@@ -1,4 +1,4 @@
-use std::sync::{LazyLock, Arc};
+use std::sync::{Arc, LazyLock};
 
 use mushi::{AllowAllConnections, Endpoint, EndpointKey, Error};
 use tokio::task::{JoinHandle, spawn};
@@ -82,9 +82,21 @@ async fn unidi() {
     let task: JoinHandle<Result<(), Error>> = spawn(async move {
         if let Some(sesh) = end2.accept().await {
             let mut sesh = sesh?;
-            let data = sesh.accept_uni().await.unwrap().read(5).await.unwrap().unwrap();
+            let data = sesh
+                .accept_uni()
+                .await
+                .unwrap()
+                .read(5)
+                .await
+                .unwrap()
+                .unwrap();
             assert_eq!(data, "Hello");
-            sesh.open_uni().await.unwrap().write(b"World").await.unwrap();
+            sesh.open_uni()
+                .await
+                .unwrap()
+                .write(b"World")
+                .await
+                .unwrap();
             sesh.closed().await?;
         }
 
@@ -92,8 +104,20 @@ async fn unidi() {
     });
 
     let mut sesh = end1.connect(addr).await.unwrap();
-    sesh.open_uni().await.unwrap().write(b"Hello").await.unwrap();
-    let data = sesh.accept_uni().await.unwrap().read(5).await.unwrap().unwrap();
+    sesh.open_uni()
+        .await
+        .unwrap()
+        .write(b"Hello")
+        .await
+        .unwrap();
+    let data = sesh
+        .accept_uni()
+        .await
+        .unwrap()
+        .read(5)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(data, "World");
     sesh.close(0, "end");
     task.await.unwrap().unwrap();
@@ -132,4 +156,3 @@ async fn bidi() {
     sesh.close(0, "end");
     task.await.unwrap().unwrap();
 }
-
