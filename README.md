@@ -1,4 +1,4 @@
-# Mushi
+# Mushi 🫖🍵
 
 _WebTransport with mutual authentication._
 
@@ -15,12 +15,12 @@ hole-punching, port negotiation, discovery of peers, etc... and you get a super-
 `Endpoint` structure that you can talk to other peers with. The cryptography of Iroh is
 based on mTLS: each peer has an ED25519 keypair, and uses it both as a certificate and
 as a node identity. There's no PKI: an incoming connection presents its ED25519 public
-key, the TLS handshake makes sure that it's authentic, and it's up to the application
-whether it trusts that key (and establishes the connection) or not.
+key, the TLS handshake makes sure it's authentic, and it's up to the application whether
+it trusts that key (and establishes the connection) or not.
 
 Mushi came about when wanting something similar to Iroh, but in a context where the
-peer-to-peer bits were unnecessary (and in fact counter-productive), but where web PKI
-was inappropriate, and an application-defined trust model with mutually-authenticated
+peer-to-peer bits were unnecessary (and in fact counter-productive), and where web PKI
+was inappropriate, yet an application-defined trust model with mutually-authenticated
 peers was more desirable. Additionally, with discovery and other details unused, it
 became easier to be flexible on the cryptography suite: Mushi works with anything that
 TLS 1.3 does, such as ECDSA, rather than being restricted to ED25519.
@@ -59,3 +59,4 @@ PKI, match public keys instead, and prefer issuing short-lived certificates on t
 [cli]: https://lib.rs/crate/mushi-cli
 [docs-cli]: ./docs/CLI.md
 
+🧋
