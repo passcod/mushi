@@ -1,20 +1,29 @@
-use std::{net::{ToSocketAddrs, SocketAddr, IpAddr, Ipv6Addr, Ipv4Addr}, sync::Arc};
+use std::{
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs},
+    sync::Arc,
+};
 
-pub use web_transport_quinn::{self as web_transport, quinn, quinn::rustls};
 pub use url::Url;
+pub use web_transport_quinn::{self as web_transport, quinn, quinn::rustls};
 
 use bytes::{Buf, BufMut, Bytes};
-use quinn::{congestion::ControllerFactory, crypto::rustls::{QuicClientConfig, QuicServerConfig}, ConnectionError};
+use quinn::{
+    ApplicationClose,
+    ConnectionError,
+    congestion::ControllerFactory,
+    crypto::rustls::{QuicClientConfig, QuicServerConfig},
+};
 use rcgen::{CertificateParams, DistinguishedName as Dn, DnType, KeyPair};
 use rustls::{
-    KeyLogFile,
-    DigitallySignedStruct, DistinguishedName, SignatureScheme,
+    DigitallySignedStruct, DistinguishedName, KeyLogFile, SignatureScheme,
     client::{
         ResolvesClientCert,
         danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier},
     },
-    crypto::{CryptoProvider, verify_tls13_signature},
-    pki_types::{CertificateDer, PrivateKeyDer, ServerName, SubjectPublicKeyInfoDer, UnixTime},
+    crypto::{CryptoProvider, WebPkiSupportedAlgorithms, verify_tls13_signature},
+    pki_types::{
+        CertificateDer, PrivateKeyDer, ServerName, SubjectPublicKeyInfoDer, UnixTime, alg_id,
+    },
     server::{
         ClientHello, ParsedCertificate, ResolvesServerCert,
         danger::{ClientCertVerified, ClientCertVerifier},
@@ -22,10 +31,37 @@ use rustls::{
     sign::CertifiedKey,
 };
 use time::{Duration, OffsetDateTime};
+use tracing::trace;
 use web_transport::{ALPN, SessionError};
 
 pub fn install_crypto_provider() {
-    rustls::crypto::ring::default_provider().install_default().unwrap();
+    let mut provider = rustls::crypto::ring::default_provider();
+    let algos = Box::leak(
+        provider
+            .signature_verification_algorithms
+            .all
+            .iter()
+            .cloned()
+            .filter(|a| a.public_key_alg_id() != alg_id::RSA_ENCRYPTION)
+            .collect::<Vec<_>>()
+            .into_boxed_slice(),
+    );
+    let mappings = Box::leak(
+        provider
+            .signature_verification_algorithms
+            .mapping
+            .iter()
+            .cloned()
+            .filter(|(sig, _)| sig.as_str().is_some_and(|s| !s.contains("RSA")))
+            .collect::<Vec<_>>()
+            .into_boxed_slice(),
+    );
+    provider.signature_verification_algorithms = WebPkiSupportedAlgorithms {
+        all: algos,
+        mapping: mappings,
+    };
+    trace!(?provider, "mushi crypto provider");
+    provider.install_default().unwrap();
 }
 
 #[derive(Debug, Clone)]
@@ -42,8 +78,7 @@ impl std::ops::Deref for EndpointKey {
 }
 
 pub type SigScheme = (SignatureScheme, &'static rcgen::SignatureAlgorithm);
-pub const SIGSCHEME_ED25519: SigScheme =
-    (SignatureScheme::ED25519, &rcgen::PKCS_ED25519);
+pub const SIGSCHEME_ED25519: SigScheme = (SignatureScheme::ED25519, &rcgen::PKCS_ED25519);
 pub const SIGSCHEME_ECDSA256: SigScheme = (
     SignatureScheme::ECDSA_NISTP256_SHA256,
     &rcgen::PKCS_ECDSA_P256_SHA256,
@@ -307,16 +342,20 @@ impl Endpoint {
         }
         let transport = Arc::new(transport);
 
-        let mut server_config =
-            quinn::ServerConfig::with_crypto(Arc::new(QuicServerConfig::try_from(server_config).unwrap()));
+        let mut server_config = quinn::ServerConfig::with_crypto(Arc::new(
+            QuicServerConfig::try_from(server_config).unwrap(),
+        ));
         server_config.transport_config(transport.clone());
 
         let mut client_config =
             quinn::ClientConfig::new(Arc::new(QuicClientConfig::try_from(client_config).unwrap()));
         client_config.transport_config(transport);
 
-        let mut endpoint =
-            quinn::Endpoint::server(server_config, bind_to.to_socket_addrs().unwrap().next().unwrap()).unwrap();
+        let mut endpoint = quinn::Endpoint::server(
+            server_config,
+            bind_to.to_socket_addrs().unwrap().next().unwrap(),
+        )
+        .unwrap();
         endpoint.set_default_client_config(client_config.clone());
 
         Ok(Self {
@@ -343,17 +382,14 @@ impl Endpoint {
                 });
             }
             let url = Url::parse(&format!("https://{addr}")).unwrap();
-            let conn = self
-                .endpoint
-                .connect_with(self.client_config.clone(), addr, "mushi.mushi")?;
-            let conn = conn
-                .await?;
+            let conn =
+                self.endpoint
+                    .connect_with(self.client_config.clone(), addr, "mushi.mushi")?;
+            let conn = conn.await?;
 
             match web_transport::Session::connect(conn, &url).await {
-                Ok(s) => {
-                    return Ok(Session::new(s))
-                }
-                Err(e) => { last_err = Some(Error::from(e)) }
+                Ok(s) => return Ok(Session::new(s)),
+                Err(e) => last_err = Some(Error::from(e)),
             }
         }
 
@@ -478,10 +514,11 @@ impl Session {
     }
 
     /// Block until the connection is closed.
-    pub async fn closed(&self) -> Result<(), Error> {
+    pub async fn closed(&self) -> Result<Option<ApplicationClose>, Error> {
         match self.inner.closed().await {
-            SessionError::ConnectionError(ConnectionError::LocallyClosed) => Ok(()),
-            e => Err(Error::Session(e))
+            SessionError::ConnectionError(ConnectionError::LocallyClosed) => Ok(None),
+            SessionError::ConnectionError(ConnectionError::ApplicationClosed(ac)) => Ok(Some(ac)),
+            e => Err(Error::Session(e)),
         }
     }
 }
