@@ -9,7 +9,9 @@ crate-type = ["cdylib"]
 [dependencies]
 napi = { version = "2.12.2", default-features = false, features = ["async", "napi4"] }
 napi-derive = "2.12.2"
-mushi = "0.0.0"
+mushi = { version = "0.0.0", path = "../lib" }
+bytes = "1.10.1"
+tokio = { version = "1.44.1", features = ["sync"] }
 
 [build-dependencies]
 napi-build = "2.0.1"

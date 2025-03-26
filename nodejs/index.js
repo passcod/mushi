@@ -310,6 +310,12 @@ if (!nativeBinding) {
   throw new Error(`Failed to load native binding`)
 }
 
-const { sum } = nativeBinding
+const { EndpointKey, Allower, Endpoint, Session, RecvStream, SendStream, BidiStream } = nativeBinding
 
-module.exports.sum = sum
+module.exports.EndpointKey = EndpointKey
+module.exports.Allower = Allower
+module.exports.Endpoint = Endpoint
+module.exports.Session = Session
+module.exports.RecvStream = RecvStream
+module.exports.SendStream = SendStream
+module.exports.BidiStream = BidiStream

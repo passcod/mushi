@@ -84,6 +84,7 @@ use rustls::{
     sign::CertifiedKey,
 };
 use time::{Duration, OffsetDateTime};
+use tokio::sync::Mutex;
 use tracing::trace;
 use web_transport::{ALPN, SessionError};
 
@@ -409,9 +410,10 @@ impl ClientCertVerifier for ConnectionAllower {
 ///
 /// Before creating an endpoint, ensure that a default [`rustls::crypto::CryptoProvider`] has been
 /// installed, preferably using [`install_crypto_provider()`].
+#[derive(Clone)]
 pub struct Endpoint {
     client_config: quinn::ClientConfig,
-    server: web_transport::Server,
+    server: Arc<Mutex<web_transport::Server>>,
     key: Arc<EndpointKey>,
     endpoint: quinn::Endpoint,
 }
@@ -510,7 +512,7 @@ impl Endpoint {
         Ok(Self {
             key,
             client_config,
-            server: web_transport::Server::new(endpoint.clone()),
+            server: Arc::new(Mutex::new(web_transport::Server::new(endpoint.clone()))),
             endpoint,
         })
     }
@@ -556,8 +558,8 @@ impl Endpoint {
     }
 
     /// Accept an incoming session.
-    pub async fn accept(&mut self) -> Option<Result<Session, Error>> {
-        match self.server.accept().await {
+    pub async fn accept(&self) -> Option<Result<Session, Error>> {
+        match self.server.lock().await.accept().await {
             Some(session) => Some(
                 session
                     .ok()
@@ -593,13 +595,13 @@ impl Endpoint {
 ///
 /// If all references to a connection (including every clone of the `Session` handle, streams of
 /// incoming streams, and the various stream types) have been dropped, then the session will be
-/// automatically closed with an `code` of 0 and an empty reason. You can also close the session
+/// automatically closed with a `code` of 0 and an empty reason. You can also close the session
 /// explicitly by calling [`Session::close()`].
 ///
-/// Closing the session immediately abandons efforts to deliver data to the peer. Upon receiving
-/// `CONNECTION_CLOSE` the peer may drop any stream data not yet delivered to the application.
-/// [`Session::close()`] describes in more detail how to gracefully close a session without losing
-/// application data.
+/// Closing the session immediately immediately sends a `CONNECTION_CLOSE` frame and then abandons
+/// efforts to deliver data to the peer. Upon receiving `CONNECTION_CLOSE` the peer may drop any
+/// stream data not yet delivered to the application. [`Session::close()`] describes in more detail
+/// how to gracefully close a session without losing application data.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Session {
     inner: web_transport::Session,
@@ -628,7 +630,8 @@ impl Session {
 
     /// The public key of the remote peer.
     ///
-    /// This should always be `Some(_)` but the internals return an `Option`.
+    /// This may be unavailable if `require_client_auth` returned `false` in the Endpoint's
+    /// [`AllowConnection`] instance.
     pub fn peer_key(&self) -> Option<&SubjectPublicKeyInfoDer<'_>> {
         self.peer_key.as_ref()
     }
@@ -644,26 +647,27 @@ impl Session {
         &self.inner
     }
 
-    /// Block until the peer creates a new unidirectional stream.
+    /// Wait until the peer creates a new unidirectional stream.
     ///
-    /// Won't return None unless the connection is closed.
-    pub async fn accept_uni(&mut self) -> Result<RecvStream, Error> {
-        let stream = self.inner.accept_uni().await?;
+    /// Will error if the connection is closed.
+    pub async fn accept_uni(&self) -> Result<RecvStream, Error> {
+        let inner = self.inner.clone();
+        let stream = inner.accept_uni().await?;
         Ok(RecvStream::new(stream))
     }
 
-    /// Block until the peer creates a new bidirectional stream.
-    pub async fn accept_bi(&mut self) -> Result<(SendStream, RecvStream), Error> {
+    /// Wait until the peer creates a new bidirectional stream.
+    pub async fn accept_bi(&self) -> Result<(SendStream, RecvStream), Error> {
         let (s, r) = self.inner.accept_bi().await?;
         Ok((SendStream::new(s), RecvStream::new(r)))
     }
 
     /// Open a new bidirectional stream.
     ///
-    /// May block when there are too many concurrent streams.
-    pub async fn open_bi(&mut self) -> Result<(SendStream, RecvStream), Error> {
-        Ok(self
-            .inner
+    /// May wait when there are too many concurrent streams.
+    pub async fn open_bi(&self) -> Result<(SendStream, RecvStream), Error> {
+        let inner = self.inner.clone();
+        Ok(inner
             .open_bi()
             .await
             .map(|(s, r)| (SendStream::new(s), RecvStream::new(r)))?)
@@ -671,9 +675,10 @@ impl Session {
 
     /// Open a new unidirectional stream.
     ///
-    /// May block when there are too many concurrent streams.
-    pub async fn open_uni(&mut self) -> Result<SendStream, Error> {
-        Ok(self.inner.open_uni().await.map(SendStream::new)?)
+    /// May wait when there are too many concurrent streams.
+    pub async fn open_uni(&self) -> Result<SendStream, Error> {
+        let inner = self.inner.clone();
+        Ok(inner.open_uni().await.map(SendStream::new)?)
     }
 
     /// Send an unreliable datagram over the network.
@@ -684,8 +689,9 @@ impl Session {
     /// - Payload is larger than `max_datagram_size()`
     /// - Peer is not receiving datagrams
     /// - Peer has too many outstanding datagrams
-    pub fn send_datagram(&mut self, payload: Bytes) -> Result<(), Error> {
-        Ok(self.inner.send_datagram(payload)?)
+    pub fn send_datagram(&self, payload: Bytes) -> Result<(), Error> {
+        let inner = self.inner.clone();
+        Ok(inner.send_datagram(payload)?)
     }
 
     /// The maximum size of a datagram that can be sent.
@@ -694,15 +700,16 @@ impl Session {
     }
 
     /// Receive a datagram over the network.
-    pub async fn recv_datagram(&mut self) -> Result<Bytes, Error> {
-        Ok(self.inner.read_datagram().await?)
+    pub async fn recv_datagram(&self) -> Result<Bytes, Error> {
+        let inner = self.inner.clone();
+        Ok(inner.read_datagram().await?)
     }
 
     /// Close the session immediately.
     ///
     /// Pending operations will fail immediately with `Connection(ConnectionError::LocallyClosed)`.
-    /// No more data is sent to the peer and the peer may drop buffered data upon receiving the
-    /// `CONNECTION_CLOSE` frame.
+    /// No more data is sent to the peer beyond a `CONNECTION_CLOSE` frame, and the peer may drop
+    /// buffered data upon receiving the `CONNECTION_CLOSE` frame.
     ///
     /// `code` and `reason` are not interpreted, and are provided directly to the peer.
     ///
@@ -720,14 +727,15 @@ impl Session {
     ///
     /// The sending side can not guarantee all stream data is delivered to the remote application.
     /// It only knows the data is delivered to the QUIC stack of the remote endpoint. Once the
-    /// local side sends a `CONNECTION_CLOSE` frame in response to calling [`Session::close()`] the
-    /// remote endpoint may drop any data it received but is as yet undelivered to the application,
-    /// including data that was acknowledged as received to the local endpoint.
-    pub fn close(&mut self, code: u32, reason: &str) {
-        self.inner.close(code, reason.as_bytes())
+    /// local side sends a `CONNECTION_CLOSE` frame, the remote endpoint may drop any data it
+    /// received but is as yet undelivered to the application, including data that was acknowledged
+    /// as received to the local endpoint.
+    pub fn close(&self, code: u32, reason: &str) {
+        let inner = self.inner.clone();
+        inner.close(code, reason.as_bytes())
     }
 
-    /// Block until the connection is closed.
+    /// Wait until the connection is closed.
     ///
     /// Returns `Ok(None)` if the connection was closed locally, `Ok(Some(_))` if the connection
     /// was closed by a peer (e.g. with `close()`), and `Err(_)` for other unexpected reasons.
