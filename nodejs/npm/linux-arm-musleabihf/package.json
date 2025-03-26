@@ -1,0 +1,18 @@
+{
+  "name": "mushi-linux-arm-musleabihf",
+  "version": "0.0.0",
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "arm"
+  ],
+  "main": "mushi.linux-arm-musleabihf.node",
+  "files": [
+    "mushi.linux-arm-musleabihf.node"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">= 10"
+  }
+}

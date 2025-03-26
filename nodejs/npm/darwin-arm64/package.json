@@ -1,0 +1,18 @@
+{
+  "name": "mushi-darwin-arm64",
+  "version": "0.0.0",
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "main": "mushi.darwin-arm64.node",
+  "files": [
+    "mushi.darwin-arm64.node"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">= 10"
+  }
+}
