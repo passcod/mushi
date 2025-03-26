@@ -42,9 +42,9 @@ applications choose from ECDSA or ED25519 as is more convenient. (RSA is not all
 Mushi is [a Rust crate][lib-rust] ([docs][docs-rust]), with some foreign interfaces for
 convenience:
 
-- [a Node.js module][lib-node] ([docs][docs-node])
-- [a Python wheel][lib-python] ([docs][docs-python])
-- [a CLI tool][cli] ([docs][docs-cli])
+- [Node.js][lib-node] ([docs][docs-node])
+- [Python][lib-python] ([docs][docs-python]) (TODO!)
+- [a CLI tool][cli] ([docs][docs-cli]) (TODO!)
 
 Mushi is also nothing special: as long as you have TLS-level control for your WebTransport
 implementation, you can play along. Require client certificates, don't validate against web
