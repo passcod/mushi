@@ -532,7 +532,7 @@ dependencies = [
 
 [[package]]
 name = "mushi"
-version = "0.0.7"
+version = "0.0.8"
 dependencies = [
  "base65536",
  "bytes",

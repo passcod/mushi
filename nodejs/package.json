@@ -1,6 +1,6 @@
 {
   "name": "mushi",
-  "version": "0.0.7",
+  "version": "0.0.8",
   "description": "Point-to-point QUIC networking with application-defined mutual authentication",
   "repository": "https://github.com/passcod/mushi",
   "author": "Félix Saparelli <felix@passcod.name>",
@@ -48,19 +48,19 @@
     "version": "napi version"
   },
   "optionalDependencies": {
-    "@passcod/mushi-android-arm-eabi": "0.0.7",
-    "@passcod/mushi-android-arm64": "0.0.7",
-    "@passcod/mushi-darwin-arm64": "0.0.7",
-    "@passcod/mushi-darwin-universal": "0.0.7",
-    "@passcod/mushi-darwin-x64": "0.0.7",
-    "@passcod/mushi-linux-arm-gnueabihf": "0.0.7",
-    "@passcod/mushi-linux-arm-musleabihf": "0.0.7",
-    "@passcod/mushi-linux-arm64-gnu": "0.0.7",
-    "@passcod/mushi-linux-arm64-musl": "0.0.7",
-    "@passcod/mushi-linux-riscv64-gnu": "0.0.7",
-    "@passcod/mushi-linux-x64-gnu": "0.0.7",
-    "@passcod/mushi-linux-x64-musl": "0.0.7",
-    "@passcod/mushi-win32-arm64-msvc": "0.0.7",
-    "@passcod/mushi-win32-x64-msvc": "0.0.7"
+    "@passcod/mushi-win32-x64-msvc": "0.0.8",
+    "@passcod/mushi-darwin-x64": "0.0.8",
+    "@passcod/mushi-linux-x64-gnu": "0.0.8",
+    "@passcod/mushi-darwin-arm64": "0.0.8",
+    "@passcod/mushi-android-arm64": "0.0.8",
+    "@passcod/mushi-linux-arm64-gnu": "0.0.8",
+    "@passcod/mushi-linux-arm64-musl": "0.0.8",
+    "@passcod/mushi-win32-arm64-msvc": "0.0.8",
+    "@passcod/mushi-linux-arm-gnueabihf": "0.0.8",
+    "@passcod/mushi-linux-arm-musleabihf": "0.0.8",
+    "@passcod/mushi-linux-x64-musl": "0.0.8",
+    "@passcod/mushi-android-arm-eabi": "0.0.8",
+    "@passcod/mushi-darwin-universal": "0.0.8",
+    "@passcod/mushi-linux-riscv64-gnu": "0.0.8"
   }
 }
