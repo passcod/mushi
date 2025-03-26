@@ -86,10 +86,18 @@ jobs:
     runs-on: ${{ matrix.settings.host }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          sparse-checkout: nodejs
+          sparse-checkout-cone-mode: false
+      - name: Move nodejs files to root
+        run: |
+          ls -lah
+          shopt -s dotglob
+          mv nodejs/* .
+          ls -lah
       - name: Setup node
         uses: actions/setup-node@v4
         if: ${{ !matrix.settings.docker }}
-        working-directory: nodejs
         with:
           node-version: 20
           cache: npm
@@ -110,16 +118,13 @@ jobs:
         shell: bash
       - name: Setup node x86
         if: matrix.settings.target == 'i686-pc-windows-msvc'
-        working-directory: nodejs
         run: npm run config set supportedArchitectures.cpu "ia32"
         shell: bash
       - name: Install dependencies
-        working-directory: nodejs
         run: npm run install
       - name: Setup node x86
         uses: actions/setup-node@v4
         if: matrix.settings.target == 'i686-pc-windows-msvc'
-        working-directory: nodejs
         with:
           node-version: 20
           cache: npm run
@@ -127,19 +132,16 @@ jobs:
       - name: Build in docker
         uses: addnab/docker-run-action@v3
         if: ${{ matrix.settings.docker }}
-        working-directory: nodejs
         with:
           image: ${{ matrix.settings.docker }}
           options: '--user 0:0 -v ${{ github.workspace }}/.cargo-cache/git/db:/usr/local/cargo/git/db -v ${{ github.workspace }}/.cargo/registry/cache:/usr/local/cargo/registry/cache -v ${{ github.workspace }}/.cargo/registry/index:/usr/local/cargo/registry/index -v ${{ github.workspace }}:/build -w /build'
           run: ${{ matrix.settings.build }}
       - name: Build
         run: ${{ matrix.settings.build }}
-        working-directory: nodejs
         if: ${{ !matrix.settings.docker }}
         shell: bash
       - name: Upload artifact
         uses: actions/upload-artifact@v4
-        working-directory: nodejs
         with:
           name: bindings-${{ matrix.settings.target }}
           path: ${{ env.APP_NAME }}.*.node
