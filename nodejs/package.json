@@ -43,5 +43,21 @@
     "test": "ava",
     "universal": "napi universal",
     "version": "napi version"
+  },
+  "optionalDependencies": {
+    "@passcod/mushi-win32-x64-msvc": "0.0.6",
+    "@passcod/mushi-darwin-x64": "0.0.6",
+    "@passcod/mushi-linux-x64-gnu": "0.0.6",
+    "@passcod/mushi-darwin-arm64": "0.0.6",
+    "@passcod/mushi-android-arm64": "0.0.6",
+    "@passcod/mushi-linux-arm64-gnu": "0.0.6",
+    "@passcod/mushi-linux-arm64-musl": "0.0.6",
+    "@passcod/mushi-win32-arm64-msvc": "0.0.6",
+    "@passcod/mushi-linux-arm-gnueabihf": "0.0.6",
+    "@passcod/mushi-linux-arm-musleabihf": "0.0.6",
+    "@passcod/mushi-linux-x64-musl": "0.0.6",
+    "@passcod/mushi-android-arm-eabi": "0.0.6",
+    "@passcod/mushi-darwin-universal": "0.0.6",
+    "@passcod/mushi-linux-riscv64-gnu": "0.0.6"
   }
 }
