@@ -90,12 +90,11 @@ jobs:
           sparse-checkout: nodejs
           sparse-checkout-cone-mode: false
       - name: Move nodejs files to root
+        shell: bash
         run: |
-          ls -lah
           shopt -s dotglob
           mv nodejs/* .
           rmdir nodejs
-          ls -lah
       - name: Setup node
         uses: actions/setup-node@v4
         if: ${{ !matrix.settings.docker }}
@@ -215,12 +214,11 @@ jobs:
           sparse-checkout: nodejs
           sparse-checkout-cone-mode: false
       - name: Move nodejs files to root
+        shell: bash
         run: |
-          ls -lah
           shopt -s dotglob
           mv nodejs/* .
           rmdir nodejs
-          ls -lah
       - name: Setup node
         uses: actions/setup-node@v4
         with:
@@ -256,12 +254,11 @@ jobs:
           sparse-checkout: nodejs
           sparse-checkout-cone-mode: false
       - name: Move nodejs files to root
+        shell: bash
         run: |
-          ls -lah
           shopt -s dotglob
           mv nodejs/* .
           rmdir nodejs
-          ls -lah
       - name: Setup node
         uses: actions/setup-node@v4
         with:
@@ -296,12 +293,11 @@ jobs:
           sparse-checkout: nodejs
           sparse-checkout-cone-mode: false
       - name: Move nodejs files to root
+        shell: bash
         run: |
-          ls -lah
           shopt -s dotglob
           mv nodejs/* .
           rmdir nodejs
-          ls -lah
       - name: Setup node
         uses: actions/setup-node@v4
         with:
@@ -338,12 +334,11 @@ jobs:
           sparse-checkout: nodejs
           sparse-checkout-cone-mode: false
       - name: Move nodejs files to root
+        shell: bash
         run: |
-          ls -lah
           shopt -s dotglob
           mv nodejs/* .
           rmdir nodejs
-          ls -lah
       - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
@@ -382,12 +377,11 @@ jobs:
           sparse-checkout: nodejs
           sparse-checkout-cone-mode: false
       - name: Move nodejs files to root
+        shell: bash
         run: |
-          ls -lah
           shopt -s dotglob
           mv nodejs/* .
           rmdir nodejs
-          ls -lah
       - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
@@ -431,12 +425,11 @@ jobs:
           sparse-checkout: nodejs
           sparse-checkout-cone-mode: false
       - name: Move nodejs files to root
+        shell: bash
         run: |
-          ls -lah
           shopt -s dotglob
           mv nodejs/* .
           rmdir nodejs
-          ls -lah
       - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
@@ -474,12 +467,11 @@ jobs:
           sparse-checkout: nodejs
           sparse-checkout-cone-mode: false
       - name: Move nodejs files to root
+        shell: bash
         run: |
-          ls -lah
           shopt -s dotglob
           mv nodejs/* .
           rmdir nodejs
-          ls -lah
       - name: Setup node
         uses: actions/setup-node@v4
         with:
@@ -523,12 +515,11 @@ jobs:
           sparse-checkout: nodejs
           sparse-checkout-cone-mode: false
       - name: Move nodejs files to root
+        shell: bash
         run: |
-          ls -lah
           shopt -s dotglob
           mv nodejs/* .
           rmdir nodejs
-          ls -lah
       - name: Setup node
         uses: actions/setup-node@v4
         with:
