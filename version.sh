@@ -40,5 +40,5 @@ npm version "$ver"
 popd
 
 git commit -am "$ver"
-git tag -sam {,}"$ver"
+git tag -sam {,}"v$ver"
 git push
