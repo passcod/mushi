@@ -1,6 +1,6 @@
 [package]
 name = "mushi"
-version = "0.0.1"
+version = "0.0.2"
 edition = "2024"
 
 authors = ["Félix Saparelli <felix@passcod.name>"]
@@ -20,7 +20,7 @@ time = "0.3.41"
 tokio = { version = "1.44.1", features = ["sync"] }
 tracing = "0.1.41"
 url = "2.5.4"
-web-transport-quinn = "0.5.0"
+web-transport-quinn = { version = "0.6.1", default-features = false, features = ["ring"], package = "passcod-web-transport-quinn" }
 
 [dev-dependencies]
 tokio = { version = "1.44.1", features = ["full"] }
