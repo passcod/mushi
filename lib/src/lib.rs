@@ -204,7 +204,11 @@ impl EndpointKey {
         requested.contains(&self.scheme.0)
     }
 
-    fn make_certificate(&self) -> Option<Arc<CertifiedKey>> {
+    /// Generate a certificate for this key.
+    ///
+    /// This is primarily used internally, but exposed for convenience if you're implementing the
+    /// transport yourself and don't want to bother making certificates correctly.
+    pub fn make_certificate(&self) -> Option<Arc<CertifiedKey>> {
         // some stacks balk if certificates don't have a SAN or DN.
         // generate a fake SAN based on the fingerprint of the public key
         // this creates a 62-character DNS label, which is right under the limit
