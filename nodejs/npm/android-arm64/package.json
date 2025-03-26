@@ -2,8 +2,8 @@
   "name": "@passcod/mushi-android-arm64",
   "repository": "https://github.com/passcod/mushi",
   "author": "Félix Saparelli <felix@passcod.name>",
-  "license": "Apache-2.0 OR MIT",
-  "version": "0.0.5",
+  "license": "MIT",
+  "version": "0.0.6",
   "os": [
     "android"
   ],
@@ -14,7 +14,6 @@
   "files": [
     "mushi.android-arm64.node"
   ],
-  "license": "MIT",
   "engines": {
     "node": ">= 10"
   }

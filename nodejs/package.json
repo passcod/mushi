@@ -1,6 +1,6 @@
 {
   "name": "mushi",
-  "version": "0.0.5",
+  "version": "0.0.6",
   "description": "Point-to-point QUIC networking with application-defined mutual authentication",
   "repository": "https://github.com/passcod/mushi",
   "author": "Félix Saparelli <felix@passcod.name>",
