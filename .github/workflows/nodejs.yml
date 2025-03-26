@@ -125,9 +125,9 @@ jobs:
         shell: bash
       - name: Setup node x86
         if: matrix.settings.target == 'i686-pc-windows-msvc'
-        run: npm config set supportedArchitectures.cpu "ia32"
-        shell: bash
+        run: npm install --cpu ia32
       - name: Install dependencies
+        if: matrix.settings.target != 'i686-pc-windows-msvc'
         run: npm install
       - name: Setup node x86
         uses: actions/setup-node@v4
@@ -312,8 +312,7 @@ jobs:
           cache: npm
       - name: Install dependencies
         run: |
-          npm config set supportedArchitectures.libc "musl"
-          npm install
+          npm install --libc musl
       - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
@@ -356,9 +355,7 @@ jobs:
         shell: bash
       - name: Install dependencies
         run: |
-          npm config set supportedArchitectures.cpu "arm64"
-          npm config set supportedArchitectures.libc "glibc"
-          npm install
+          npm install --cpu arm64 --libc glibc
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
         with:
@@ -398,10 +395,7 @@ jobs:
         run: ls -R .
         shell: bash
       - name: Install dependencies
-        run: |
-          npm config set supportedArchitectures.cpu "arm64"
-          npm config set supportedArchitectures.libc "musl"
-          npm install
+        run: npm install --cpu arm64 --libc musl
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
         with:
@@ -447,8 +441,7 @@ jobs:
         shell: bash
       - name: Install dependencies
         run: |
-          npm config set supportedArchitectures.cpu "arm"
-          npm install
+          npm install --cpu arm
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
         with:
