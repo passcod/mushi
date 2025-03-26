@@ -211,13 +211,13 @@ impl EndpointKey {
     pub fn make_certificate(&self) -> Option<Arc<CertifiedKey>> {
         // some stacks balk if certificates don't have a SAN or DN.
         // generate a fake SAN based on the fingerprint of the public key
-        // this creates a 62-character DNS label, which is right under the limit
+        // this plus the xn-- prefix = a 62-character DNS label, right under the limit
         let print = ring::digest::digest(&ring::digest::SHA256, &self.key.public_key_der());
         let puny = idna::punycode::encode_str(&base65536::encode(&print, None))
             .unwrap_or(MUSHI_TLD.to_string());
 
         // append a non-existing TLD so we never conflict with Internet resources
-        let san = format!("{puny}.{MUSHI_TLD}");
+        let san = format!("xn--{puny}.{MUSHI_TLD}");
 
         let mut cert = CertificateParams::new(vec![san.clone()]).ok()?;
         cert.distinguished_name = Dn::new();

@@ -104,6 +104,21 @@ impl EndpointKey {
     pub fn set_validity(&mut self, seconds: u32) {
         self.0.validity = Duration::from_secs(seconds as _).try_into().unwrap();
     }
+
+    /// Generate a certificate for this key.
+    ///
+    /// This is primarily used internally, but exposed for convenience if you're implementing the
+    /// transport yourself and don't want to bother making certificates correctly.
+    ///
+    /// Returns the DER-encoded certificate.
+    #[napi]
+    pub fn make_certificate(&self) -> Result<Buffer> {
+        *SETUP;
+
+        self.0.make_certificate()
+            .ok_or_else(|| Error::from_reason("key: unknown error making certificate"))
+            .map(|c| Buffer::from(&*c.cert[0]))
+    }
 }
 
 /// Trust policy for peers.

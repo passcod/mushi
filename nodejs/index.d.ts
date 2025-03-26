@@ -39,6 +39,15 @@ export declare class EndpointKey {
    * Note that changing the validity of a key once it's used in an Endpoint does nothing.
    */
   set validity(seconds: number)
+  /**
+   * Generate a certificate for this key.
+   *
+   * This is primarily used internally, but exposed for convenience if you're implementing the
+   * transport yourself and don't want to bother making certificates correctly.
+   *
+   * Returns the DER-encoded certificate.
+   */
+  makeCertificate(): Buffer
 }
 /** Trust policy for peers. */
 export declare class Allower {
