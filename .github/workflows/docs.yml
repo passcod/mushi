@@ -1,0 +1,35 @@
+name: Docs
+
+permissions:
+  contents: read
+  id-token: write
+  pages: write
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*.*.*'
+
+jobs:
+  build:
+   name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/configure-pages@v5
+      - name: Setup node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: nodejs/package-lock.json
+      - name: Install dependencies
+        working-directory: nodejs
+        run: npm install
+      - name: Create docs
+        working-directory: nodejs
+        run: npm run docs -- --out ../_site/js
+      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/deploy-pages@v4
