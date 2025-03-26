@@ -158,6 +158,15 @@ jobs:
     name: Build FreeBSD
     steps:
       - uses: actions/checkout@v4
+        with:
+          sparse-checkout: nodejs
+          sparse-checkout-cone-mode: false
+      - name: Move nodejs files to root
+        shell: bash
+        run: |
+          shopt -s dotglob
+          mv nodejs/* .
+          rmdir nodejs
       - name: Build
         id: build
         uses: cross-platform-actions/action@v0.24.0
