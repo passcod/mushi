@@ -35,7 +35,7 @@ cargo publish --allow-dirty
 popd
 
 pushd nodejs
-sed -E -i "s|^mushi = \".+\"$|version = \"$ver\"|1" Cargo.toml
+sed -E -i "s|^mushi = \".+\"$|mushi = \"$ver\"|1" Cargo.toml
 cargo update
 npm run build
 npm version "$ver"
