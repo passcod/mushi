@@ -36,6 +36,8 @@ popd
 
 pushd nodejs
 npm version "$ver"
+npm run prepublishOnly
+sed -E -i 's|^\s{4}"mushi-|    "@passcod/mushi-|' package.json
 popd
 
 git commit -am "$ver"
