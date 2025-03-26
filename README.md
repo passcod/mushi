@@ -57,6 +57,6 @@ PKI, match public keys instead, and prefer issuing short-lived certificates on t
 [lib-python]: https://pypi.org/mushi-todo
 [docs-python]: https://todo.example.com
 [cli]: https://lib.rs/crate/mushi-cli
-[docs-cli]: ./docs/CLI.md
+[docs-cli]: https://github.com/passcod/mushi/blob/main/cli/README.md
 
 🧋
