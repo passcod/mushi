@@ -35,7 +35,6 @@ cargo publish --allow-dirty
 popd
 
 pushd nodejs
-sed -E -i "s|^version = \".+\"$|version = \"$ver\"|1" Cargo.toml
 npm version "$ver"
 popd
 
