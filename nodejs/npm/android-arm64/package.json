@@ -1,5 +1,5 @@
 {
-  "name": "mushi-android-arm64",
+  "name": "@passcod/mushi-android-arm64",
   "version": "0.0.3",
   "os": [
     "android"

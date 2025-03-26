@@ -1,5 +1,5 @@
 {
-  "name": "mushi-linux-arm-musleabihf",
+  "name": "@passcod/mushi-linux-arm-musleabihf",
   "version": "0.0.3",
   "os": [
     "linux"

@@ -1,5 +1,5 @@
 {
-  "name": "mushi-linux-arm64-musl",
+  "name": "@passcod/mushi-linux-arm64-musl",
   "version": "0.0.3",
   "os": [
     "linux"

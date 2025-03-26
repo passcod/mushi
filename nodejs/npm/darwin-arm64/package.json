@@ -1,5 +1,5 @@
 {
-  "name": "mushi-darwin-arm64",
+  "name": "@passcod/mushi-darwin-arm64",
   "version": "0.0.3",
   "os": [
     "darwin"

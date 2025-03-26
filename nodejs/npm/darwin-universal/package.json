@@ -1,5 +1,5 @@
 {
-  "name": "mushi-darwin-universal",
+  "name": "@passcod/mushi-darwin-universal",
   "version": "0.0.3",
   "os": [
     "darwin"

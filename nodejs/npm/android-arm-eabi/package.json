@@ -1,5 +1,5 @@
 {
-  "name": "mushi-android-arm-eabi",
+  "name": "@passcod/mushi-android-arm-eabi",
   "version": "0.0.3",
   "os": [
     "android"

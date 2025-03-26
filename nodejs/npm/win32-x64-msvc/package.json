@@ -1,5 +1,5 @@
 {
-  "name": "mushi-win32-x64-msvc",
+  "name": "@passcod/mushi-win32-x64-msvc",
   "version": "0.0.3",
   "os": [
     "win32"
