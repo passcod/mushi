@@ -16,8 +16,9 @@ on:
       - main
     tags-ignore:
       - '**'
-    paths-include:
+    paths:
       - nodejs/**
+      - .github/workflows/nodejs.yml
 
 jobs:
   build:
@@ -166,7 +167,7 @@ jobs:
         shell: bash
         run: |
           shopt -s dotglob
-          mv nodejs/* .
+          mv nodejs/{,.}* .
           rmdir nodejs
       - name: Build
         id: build
@@ -234,7 +235,7 @@ jobs:
         shell: bash
         run: |
           shopt -s dotglob
-          mv nodejs/* .
+          mv nodejs/{,.}* .
           rmdir nodejs
       - name: Setup node
         uses: actions/setup-node@v4
@@ -274,7 +275,7 @@ jobs:
         shell: bash
         run: |
           shopt -s dotglob
-          mv nodejs/* .
+          mv nodejs/{,.}* .
           rmdir nodejs
       - name: Setup node
         uses: actions/setup-node@v4
@@ -313,7 +314,7 @@ jobs:
         shell: bash
         run: |
           shopt -s dotglob
-          mv nodejs/* .
+          mv nodejs/{,.}* .
           rmdir nodejs
       - name: Setup node
         uses: actions/setup-node@v4
@@ -353,7 +354,7 @@ jobs:
         shell: bash
         run: |
           shopt -s dotglob
-          mv nodejs/* .
+          mv nodejs/{,.}* .
           rmdir nodejs
       - name: Download artifacts
         uses: actions/download-artifact@v4
@@ -394,7 +395,7 @@ jobs:
         shell: bash
         run: |
           shopt -s dotglob
-          mv nodejs/* .
+          mv nodejs/{,.}* .
           rmdir nodejs
       - name: Download artifacts
         uses: actions/download-artifact@v4
@@ -439,7 +440,7 @@ jobs:
         shell: bash
         run: |
           shopt -s dotglob
-          mv nodejs/* .
+          mv nodejs/{,.}* .
           rmdir nodejs
       - name: Download artifacts
         uses: actions/download-artifact@v4
@@ -480,7 +481,7 @@ jobs:
         shell: bash
         run: |
           shopt -s dotglob
-          mv nodejs/* .
+          mv nodejs/{,.}* .
           rmdir nodejs
       - name: Setup node
         uses: actions/setup-node@v4
@@ -528,7 +529,7 @@ jobs:
         shell: bash
         run: |
           shopt -s dotglob
-          mv nodejs/* .
+          mv nodejs/{,.}* .
           rmdir nodejs
       - name: Setup node
         uses: actions/setup-node@v4
