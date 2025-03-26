@@ -475,11 +475,6 @@ jobs:
         run: ls -R ./npm
       - name: Show package.json
         run: cat package.json
-      - name: Fix package.json
-        run: |
-          sed -E -i 's|^\s{4}"mushi-|    "@passcod/mushi-|' package.json
-      - name: Show package.json
-        run: cat package.json
       - name: Publish
         run: |
           npm config set provenance true

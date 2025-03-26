@@ -42,7 +42,7 @@
     "build": "napi build --platform --release --js-package-name @passcod/mushi",
     "build:debug": "napi build --platform",
     "docs": "typedoc index.d.ts",
-    "prepublishOnly": "napi prepublish -t npm",
+    "prepublishOnly": "napi prepublish -t npm && sed -E -i 's|^    \"mushi-|    \"@passcod/mushi-|' package.json",
     "test": "ava",
     "universal": "napi universal",
     "version": "napi version"
