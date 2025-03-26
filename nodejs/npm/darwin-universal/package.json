@@ -1,5 +1,8 @@
 {
   "name": "@passcod/mushi-darwin-universal",
+  "repository": "https://github.com/passcod/mushi",
+  "author": "Félix Saparelli <felix@passcod.name>",
+  "license": "Apache-2.0 OR MIT",
   "version": "0.0.5",
   "os": [
     "darwin"
