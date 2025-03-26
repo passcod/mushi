@@ -53,7 +53,7 @@ PKI, match public keys instead, and prefer issuing short-lived certificates on t
 [lib-rust]: https://lib.rs/crate/mushi
 [docs-rust]: https://docs.rs/mushi
 [lib-node]: https://www.npmjs.com/package/mushi
-[docs-node]: https://todo.example.com
+[docs-node]: https://passcod.github.io/mushi/js/
 [lib-python]: https://pypi.org/mushi-todo
 [docs-python]: https://todo.example.com
 [cli]: https://lib.rs/crate/mushi-cli
