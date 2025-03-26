@@ -1,6 +1,6 @@
 [package]
 edition = "2024"
-name = "mushi-nodejs"
+name = "mushi"
 version = "0.0.0"
 
 [lib]
