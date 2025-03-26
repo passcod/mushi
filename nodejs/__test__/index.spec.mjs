@@ -1,9 +1,9 @@
 import test from 'ava'
 
-/*
-import { sum } from '../index.js'
+import { EndpointKey } from '../index.js'
 
-test('sum from native', (t) => {
-  t.is(sum(1, 2), 3)
+test('generate and round trip a key', (t) => {
+  const pem1 = EndpointKey.generate().toString()
+  const pem2 = (new EndpointKey(pem1)).toString()
+  t.is(pem1, pem2)
 })
-*/
