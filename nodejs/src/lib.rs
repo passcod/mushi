@@ -175,7 +175,7 @@ impl Allower {
     /// an additional authorisation layer to restrict connections or resource access.
     #[napi(
         constructor,
-        ts_args_type = "allowPublicKey: (key: Buffer, now: number) => bool, requireClientAuth?: boolean = true"
+        ts_args_type = "allowPublicKey: (key: Buffer, now: number) => boolean, requireClientAuth?: boolean"
     )]
     pub fn new(
         allow_public_key: ThreadsafeFunction<(Buffer, i64), ErrorStrategy::Fatal>,
@@ -224,7 +224,7 @@ impl Endpoint {
     /// [IETF Draft]: https://datatracker.ietf.org/doc/draft-ietf-ccwg-bbr/02/
     #[napi(
         constructor,
-        ts_args_type = "bindTo: string, key: EndpointKey, allower: Allower, cc?: string = 'cubic'"
+        ts_args_type = "bindTo: string, key: EndpointKey, allower: Allower, cc?: string"
     )]
     pub fn new(
         bind_to: String,

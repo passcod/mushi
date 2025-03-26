@@ -57,7 +57,7 @@ export declare class Allower {
    * cannot present a client certificate should be allowed. In that case, take care to implement
    * an additional authorisation layer to restrict connections or resource access.
    */
-  constructor(allowPublicKey: (key: Buffer, now: number) => bool, requireClientAuth?: boolean = true)
+  constructor(allowPublicKey: (key: Buffer, now: number) => boolean, requireClientAuth?: boolean)
 }
 /**
  * The main entrypoint to create connections to, and accept connections from other Mushi peers.
@@ -91,7 +91,7 @@ export declare class Endpoint {
    * [RFC 6582]: https://datatracker.ietf.org/doc/html/rfc6582
    * [IETF Draft]: https://datatracker.ietf.org/doc/draft-ietf-ccwg-bbr/02/
    */
-  constructor(bindTo: string, key: EndpointKey, allower: Allower, cc?: string = 'cubic')
+  constructor(bindTo: string, key: EndpointKey, allower: Allower, cc?: string)
   /** Get the local address the underlying socket is bound to. */
   localAddr(): string
   /** Get the number of connections (≈sessions) that are currently open. */
