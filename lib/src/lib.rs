@@ -204,33 +204,8 @@ impl EndpointKey {
         requested.contains(&self.scheme.0)
     }
 
-    /// Generate a certificate for this key.
-    ///
-    /// This is primarily used internally, but exposed for convenience if you're implementing the
-    /// transport yourself and don't want to bother making certificates correctly.
-    pub fn make_certificate(&self) -> Option<Arc<CertifiedKey>> {
-        // some stacks balk if certificates don't have a SAN or DN.
-        // generate a fake SAN based on the fingerprint of the public key
-        // this plus the xn-- prefix = a 62-character DNS label, right under the limit
-        let print = ring::digest::digest(&ring::digest::SHA256, &self.key.public_key_der());
-        let puny = idna::punycode::encode_str(&base65536::encode(&print, None))
-            .unwrap_or(MUSHI_TLD.to_string());
-
-        // append a non-existing TLD so we never conflict with Internet resources
-        let san = format!("xn--{puny}.{MUSHI_TLD}");
-
-        let mut cert = CertificateParams::new(vec![san.clone()]).ok()?;
-        cert.distinguished_name = Dn::new();
-        cert.distinguished_name.push(DnType::CommonName, san);
-
-        // issue certificates valid slightly in the past, so that servers that aren't
-        // synchronised in time properly can talk to each other. certificate periods
-        // are checked on handshake only, and Mushi generates certificates just-in-time
-        let start = OffsetDateTime::now_utc() - Duration::MINUTE;
-        cert.not_before = start;
-        cert.not_after = start + Duration::MINUTE + self.validity;
-
-        let cert = cert.self_signed(&self.key).ok()?;
+    fn get_certificate(&self) -> Option<Arc<CertifiedKey>> {
+        let cert = self.make_certificate().ok()?;
         let provider = CryptoProvider::get_default().expect("a default CryptoProvider must be set");
         Some(Arc::new(
             CertifiedKey::from_der(
@@ -241,12 +216,41 @@ impl EndpointKey {
             .ok()?,
         ))
     }
+
+    /// Generate a certificate for this key.
+    ///
+    /// This is primarily used internally, but exposed for convenience if you're implementing the
+    /// transport yourself and don't want to bother making certificates correctly.
+    pub fn make_certificate(&self) -> Result<rcgen::Certificate, rcgen::Error> {
+        // some stacks balk if certificates don't have a SAN or DN.
+        // generate a fake SAN based on the fingerprint of the public key
+        // this plus the xn-- prefix = a 62-character DNS label, right under the limit
+        let print = ring::digest::digest(&ring::digest::SHA256, &self.key.public_key_der());
+        let puny = idna::punycode::encode_str(&base65536::encode(&print, None))
+            .unwrap_or(MUSHI_TLD.to_string());
+
+        // append a non-existing TLD so we never conflict with Internet resources
+        let san = format!("xn--{puny}.{MUSHI_TLD}");
+
+        let mut cert = CertificateParams::new(vec![san.clone()])?;
+        cert.distinguished_name = Dn::new();
+        cert.distinguished_name.push(DnType::CommonName, san);
+
+        // issue certificates valid slightly in the past, so that servers that aren't
+        // synchronised in time properly can talk to each other. certificate periods
+        // are checked on handshake only, and Mushi generates certificates just-in-time
+        let start = OffsetDateTime::now_utc() - Duration::MINUTE;
+        cert.not_before = start;
+        cert.not_after = start + Duration::MINUTE + self.validity;
+
+        cert.self_signed(&self.key)
+    }
 }
 
 impl ResolvesClientCert for EndpointKey {
     fn resolve(&self, _hints: &[&[u8]], schemes: &[SignatureScheme]) -> Option<Arc<CertifiedKey>> {
         if self.supports_sigschemes(schemes) {
-            self.make_certificate()
+            self.get_certificate()
         } else {
             None
         }
@@ -259,7 +263,7 @@ impl ResolvesClientCert for EndpointKey {
 
 impl ResolvesServerCert for EndpointKey {
     fn resolve(&self, _hello: ClientHello<'_>) -> Option<Arc<CertifiedKey>> {
-        self.make_certificate()
+        self.get_certificate()
     }
 }
 
