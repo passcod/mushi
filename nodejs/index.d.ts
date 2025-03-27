@@ -21,8 +21,10 @@ export declare class EndpointKey {
    * If the key is not ED25519 or ECDSA(256|384), this will error.
    */
   constructor(privateKeyPem: string)
-  /** Serialize to PEM. */
-  toString(): string
+  /** Serialize private key to PEM. */
+  privateKeyPem(): string
+  /** Serialize public key to PEM. */
+  publicKeyPem(): string
   /** Generate a new random key pair in the default scheme. */
   static generate(): EndpointKey
   /**
@@ -45,9 +47,9 @@ export declare class EndpointKey {
    * This is primarily used internally, but exposed for convenience if you're implementing the
    * transport yourself and don't want to bother making certificates correctly.
    *
-   * Returns the DER-encoded certificate.
+   * Returns the PEM-encoded certificate.
    */
-  makeCertificate(): Buffer
+  makeCertificate(): string
 }
 /** Trust policy for peers. */
 export declare class Allower {
