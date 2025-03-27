@@ -80,13 +80,9 @@ pub mod export {
         /// This is primarily used internally, but exposed for convenience if you're implementing the
         /// transport yourself and don't want to bother making certificates correctly.
         ///
-        /// Returns the DER-encoded certificate.
-        fn make_certificate(&self) -> BResult<Vec<u8>> {
-            *SETUP;
-
-            self.0.make_certificate()
-                .ok_or(BError::Certificate)
-                .map(|c| c.cert[0].to_vec())
+        /// Returns the PEM-encoded certificate.
+        fn make_certificate(&self) -> BResult<String> {
+            Ok(self.0.make_certificate()?.pem())
         }
 
         #[staticmethod]

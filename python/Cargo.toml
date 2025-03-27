@@ -10,5 +10,5 @@ crate-type = ["cdylib"]
 
 [dependencies]
 pyo3 = "0.24.0"
-mushi = "0.0.10"
+mushi = { version = "0.0.10", path = "../lib" }
 thiserror = "2.0.12"
