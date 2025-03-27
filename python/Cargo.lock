@@ -547,6 +547,7 @@ version = "0.0.0"
 dependencies = [
  "mushi 0.0.10",
  "pyo3",
+ "thiserror 2.0.12",
 ]
 
 [[package]]

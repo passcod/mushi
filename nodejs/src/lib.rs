@@ -48,18 +48,21 @@ impl EndpointKey {
         }
 
         Err(Error::from_reason(format!(
-            "private key is {}, which is not a supported type",
-            kp.compatible_algs()
-                .next()
-                .map(|alg| format!("{alg:?}"))
-                .unwrap_or("unknown".into())
+            "private key is {:?}, which is not a supported type",
+            kp.algorithm()
         )))
     }
 
-    /// Serialize to PEM.
+    /// Serialize private key to PEM.
     #[napi]
-    pub fn to_string(&self) -> String {
+    pub fn private_key_pem(&self) -> String {
         self.0.serialize_pem()
+    }
+
+    /// Serialize public key to PEM.
+    #[napi]
+    pub fn public_key_pem(&self) -> String {
+        self.0.public_key_pem()
     }
 
     /// Generate a new random key pair in the default scheme.
