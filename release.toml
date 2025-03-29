@@ -1,0 +1,5 @@
+tag-message = "release: {{crate_name}} {{version}}"
+pre-release-commit-message = "release: {{date}}"
+sign-commit = true
+sign-tag = true
+allow-branch = ["main"]
