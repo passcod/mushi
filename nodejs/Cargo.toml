@@ -1,9 +1,10 @@
 [package]
 edition = "2024"
-name = "mushi"
+name = "mushi-nodejs"
 version = "0.0.0"
 
 [lib]
+name = "mushi"
 crate-type = ["cdylib"]
 
 [dependencies]
@@ -16,6 +17,3 @@ tokio = { version = "1.44.1", features = ["sync"] }
 [build-dependencies]
 napi-build = "2.0.1"
 
-[profile.release]
-lto = true
-strip = "symbols"
