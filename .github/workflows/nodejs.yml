@@ -98,7 +98,7 @@ jobs:
           shopt -s dotglob
           mv nodejs/* .
           rmdir nodejs
-          sed -iE 's|^mushi = \\{ version = "([0-9.]+)".+$|mushi = "\\1"|' Cargo.toml
+          sed -E -i 's|^mushi = [{] version = "([0-9.]+)".+$|mushi = "\\1"|' Cargo.toml
       - name: Setup node
         uses: actions/setup-node@v4
         if: ${{ !matrix.settings.docker }}
@@ -166,7 +166,7 @@ jobs:
           shopt -s dotglob
           mv nodejs/* .
           rmdir nodejs
-          sed -iE 's|^mushi = \\{ version = "([0-9.]+)".+$|mushi = "\\1"|' Cargo.toml
+          sed -E -i 's|^mushi = [{] version = "([0-9.]+)".+$|mushi = "\\1"|' Cargo.toml
       - name: Setup node
         uses: actions/setup-node@v4
         with:
@@ -207,7 +207,7 @@ jobs:
           shopt -s dotglob
           mv nodejs/* .
           rmdir nodejs
-          sed -iE 's|^mushi = \\{ version = "([0-9.]+)".+$|mushi = "\\1"|' Cargo.toml
+          sed -E -i 's|^mushi = [{] version = "([0-9.]+)".+$|mushi = "\\1"|' Cargo.toml
       - name: Setup node
         uses: actions/setup-node@v4
         with:
@@ -247,7 +247,7 @@ jobs:
           shopt -s dotglob
           mv nodejs/* .
           rmdir nodejs
-          sed -iE 's|^mushi = \\{ version = "([0-9.]+)".+$|mushi = "\\1"|' Cargo.toml
+          sed -E -i 's|^mushi = [{] version = "([0-9.]+)".+$|mushi = "\\1"|' Cargo.toml
       - name: Setup node
         uses: actions/setup-node@v4
         with:
@@ -288,7 +288,7 @@ jobs:
           shopt -s dotglob
           mv nodejs/* .
           rmdir nodejs
-          sed -iE 's|^mushi = \\{ version = "([0-9.]+)".+$|mushi = "\\1"|' Cargo.toml
+          sed -E -i 's|^mushi = [{] version = "([0-9.]+)".+$|mushi = "\\1"|' Cargo.toml
       - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
@@ -330,7 +330,7 @@ jobs:
           shopt -s dotglob
           mv nodejs/* .
           rmdir nodejs
-          sed -iE 's|^mushi = \\{ version = "([0-9.]+)".+$|mushi = "\\1"|' Cargo.toml
+          sed -E -i 's|^mushi = [{] version = "([0-9.]+)".+$|mushi = "\\1"|' Cargo.toml
       - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
@@ -376,7 +376,7 @@ jobs:
           shopt -s dotglob
           mv nodejs/* .
           rmdir nodejs
-          sed -iE 's|^mushi = \\{ version = "([0-9.]+)".+$|mushi = "\\1"|' Cargo.toml
+          sed -E -i 's|^mushi = [{] version = "([0-9.]+)".+$|mushi = "\\1"|' Cargo.toml
       - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
@@ -418,7 +418,7 @@ jobs:
           shopt -s dotglob
           mv nodejs/* .
           rmdir nodejs
-          sed -iE 's|^mushi = \\{ version = "([0-9.]+)".+$|mushi = "\\1"|' Cargo.toml
+          sed -E -i 's|^mushi = [{] version = "([0-9.]+)".+$|mushi = "\\1"|' Cargo.toml
       - name: Setup node
         uses: actions/setup-node@v4
         with:
@@ -466,7 +466,7 @@ jobs:
           shopt -s dotglob
           mv nodejs/* .
           rmdir nodejs
-          sed -iE 's|^mushi = \\{ version = "([0-9.]+)".+$|mushi = "\\1"|' Cargo.toml
+          sed -E -i 's|^mushi = [{] version = "([0-9.]+)".+$|mushi = "\\1"|' Cargo.toml
       - name: Setup node
         uses: actions/setup-node@v4
         with:
