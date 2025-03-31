@@ -143,5 +143,5 @@ async fn thousand_keys() {
     for _ in 0..1000 {
         n += EndpointKey::generate().unwrap().public_key_pem().len();
     }
-    dbg!(n);
+    assert!(n > 0);
 }

@@ -32,3 +32,12 @@ test("cert types", (t) => {
   const k3 = EndpointKey.generateFor("ecdsa384");
   t.assert(k3.makeCertificate().length > 800);
 });
+
+test("thousand keys", (t) => {
+  let n = 0;
+  for (let i; i < 1000; i += 1) {
+    const k = EndpointKey.generate();
+    n += k.publicKeyPem.length;
+  }
+  t.assert(n > 0);
+});
