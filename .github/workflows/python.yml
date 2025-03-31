@@ -5,7 +5,7 @@ on:
     branches:
       - main
     tags:
-      - 'python-*'
+      - "python-*"
     paths:
       - python/**
       - .github/workflows/python.yml
@@ -36,16 +36,6 @@ jobs:
             target: ppc64le
     steps:
       - uses: actions/checkout@v4
-        with:
-          sparse-checkout: python
-          sparse-checkout-cone-mode: false
-      - name: Move python files to root
-        shell: bash
-        run: |
-          shopt -s dotglob
-          mv python/* .
-          rmdir python
-          ln -s lib ..
       - uses: actions/setup-python@v5
         with:
           python-version: 3.x
@@ -77,16 +67,6 @@ jobs:
             target: armv7
     steps:
       - uses: actions/checkout@v4
-        with:
-          sparse-checkout: python
-          sparse-checkout-cone-mode: false
-      - name: Move python files to root
-        shell: bash
-        run: |
-          shopt -s dotglob
-          mv python/* .
-          rmdir python
-          ln -s lib ..
       - uses: actions/setup-python@v5
         with:
           python-version: 3.x
@@ -114,16 +94,6 @@ jobs:
             target: x86
     steps:
       - uses: actions/checkout@v4
-        with:
-          sparse-checkout: python
-          sparse-checkout-cone-mode: false
-      - name: Move python files to root
-        shell: bash
-        run: |
-          shopt -s dotglob
-          mv python/* .
-          rmdir python
-          ln -s lib ..
       - uses: actions/setup-python@v5
         with:
           python-version: 3.x
@@ -151,22 +121,13 @@ jobs:
             target: aarch64
     steps:
       - uses: actions/checkout@v4
-        with:
-          sparse-checkout: python
-          sparse-checkout-cone-mode: false
-      - name: Move python files to root
-        shell: bash
-        run: |
-          shopt -s dotglob
-          mv python/* .
-          rmdir python
-          ln -s lib ..
       - uses: actions/setup-python@v5
         with:
           python-version: 3.x
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
+          working-directory: python
           target: ${{ matrix.platform.target }}
           args: --release --out dist --find-interpreter
           sccache: ${{ !startsWith(github.ref, 'refs/tags/') }}
@@ -174,32 +135,23 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: wheels-macos-${{ matrix.platform.target }}
-          path: dist
+          path: python/dist
 
   sdist:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          sparse-checkout: python
-          sparse-checkout-cone-mode: false
-      - name: Move python files to root
-        shell: bash
-        run: |
-          shopt -s dotglob
-          mv python/* .
-          rmdir python
-          ln -s lib ..
       - name: Build sdist
         uses: PyO3/maturin-action@v1
         with:
+          working-directory: python
           command: sdist
           args: --out dist
       - name: Upload sdist
         uses: actions/upload-artifact@v4
         with:
           name: wheels-sdist
-          path: dist
+          path: python/dist
 
   release:
     name: Release
@@ -218,12 +170,13 @@ jobs:
       - name: Generate artifact attestation
         uses: actions/attest-build-provenance@v2
         with:
-          subject-path: 'wheels-*/*'
+          subject-path: "wheels-*/*"
       - name: Publish to PyPI
         if: startsWith(github.ref, 'refs/tags/python-')
         uses: PyO3/maturin-action@v1
         env:
           MATURIN_PYPI_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
         with:
+          working-directory: python
           command: upload
           args: --non-interactive --skip-existing wheels-*/*
