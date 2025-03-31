@@ -164,8 +164,8 @@ jobs:
       - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
-          name: nodejs/bindings-${{ matrix.settings.target }}
-          path: .
+          name: bindings-${{ matrix.settings.target }}
+          path: nodejs
       - name: List packages
         working-directory: nodejs
         run: ls -R .
