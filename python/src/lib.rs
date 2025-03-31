@@ -16,10 +16,7 @@ pub mod export {
         quinn::congestion::{BbrConfig, ControllerFactory, CubicConfig, NewRenoConfig},
         rcgen,
     };
-    use pyo3::{
-        prelude::*,
-        types::{PyBool, PyDict, PyString},
-    };
+    use pyo3::{prelude::*, types::PyBool};
     use tokio::sync::Mutex;
 
     use crate::error::*;
@@ -223,33 +220,19 @@ pub mod export {
         /// the `Allower` instance.
         ///
         /// `cc` is the congestion control strategy for the QUIC state machine. One of `cubic`
-        /// ([RFC
-        /// 8312]), `newreno` ([RFC 6582]), or `bbr` ([IETF Draft]]. Defaults to `cubic`.
+        /// ([RFC 8312]), `newreno` ([RFC 6582]), or `bbr` ([IETF Draft]).
         ///
-        /// [RFC 8312]: https://datatracker.ietf.org/doc/html/rfc8312 [RFC 6582]:
-        /// https://datatracker.ietf.org/doc/html/rfc6582 [IETF Draft]:
-        /// https://datatracker.ietf.org/doc/draft-ietf-ccwg-bbr/02/
+        /// [RFC 8312]: https://datatracker.ietf.org/doc/html/rfc8312
+        /// [RFC 6582]: https://datatracker.ietf.org/doc/html/rfc6582
+        /// [IETF Draft]: https://datatracker.ietf.org/doc/draft-ietf-ccwg-bbr/02/
         #[new]
-        fn new(
-            bind_to: &str,
-            key: &EndpointKey,
-            allower: &Allower,
-            py_kwargs: Option<&Bound<'_, PyDict>>,
-        ) -> BResult<Self> {
+        fn new(bind_to: &str, key: &EndpointKey, allower: &Allower, cc: &str) -> BResult<Self> {
             let cc: Arc<dyn ControllerFactory + Send + Sync + 'static> =
-                match py_kwargs.map(|k| k.get_item("cc")).transpose()?.flatten() {
-                    None => Arc::new(CubicConfig::default()),
-                    Some(cc) => match cc
-                        .downcast::<PyString>()?
-                        .to_string_lossy()
-                        .to_ascii_lowercase()
-                        .as_str()
-                    {
-                        "cubic" => Arc::new(CubicConfig::default()),
-                        "newreno" => Arc::new(NewRenoConfig::default()),
-                        "bbr" => Arc::new(BbrConfig::default()),
-                        unk => return Err(BError::UnknownCongestionControl(unk.into())),
-                    },
+                match cc.to_ascii_lowercase().as_str() {
+                    "cubic" => Arc::new(CubicConfig::default()),
+                    "newreno" => Arc::new(NewRenoConfig::default()),
+                    "bbr" => Arc::new(BbrConfig::default()),
+                    unk => return Err(BError::UnknownCongestionControl(unk.into())),
                 };
 
             *SETUP;
