@@ -18,7 +18,7 @@ async fn both_ed25519() {
     let key2 = EndpointKey::generate().unwrap();
 
     let end1 = Endpoint::new("[::1]:0", key1, Arc::new(AllowAllConnections), None).unwrap();
-    let mut end2 = Endpoint::new("[::1]:0", key2, Arc::new(AllowAllConnections), None).unwrap();
+    let end2 = Endpoint::new("[::1]:0", key2, Arc::new(AllowAllConnections), None).unwrap();
 
     let addr = end2.local_addr().unwrap();
 
@@ -43,7 +43,7 @@ async fn both_ecdsa256() {
     let key2 = EndpointKey::generate_for(mushi::SIGSCHEME_ECDSA256).unwrap();
 
     let end1 = Endpoint::new("[::1]:0", key1, Arc::new(AllowAllConnections), None).unwrap();
-    let mut end2 = Endpoint::new("[::1]:0", key2, Arc::new(AllowAllConnections), None).unwrap();
+    let end2 = Endpoint::new("[::1]:0", key2, Arc::new(AllowAllConnections), None).unwrap();
 
     let addr = end2.local_addr().unwrap();
 
@@ -68,7 +68,7 @@ async fn both_ecdsa384() {
     let key2 = EndpointKey::generate_for(mushi::SIGSCHEME_ECDSA384).unwrap();
 
     let end1 = Endpoint::new("[::1]:0", key1, Arc::new(AllowAllConnections), None).unwrap();
-    let mut end2 = Endpoint::new("[::1]:0", key2, Arc::new(AllowAllConnections), None).unwrap();
+    let end2 = Endpoint::new("[::1]:0", key2, Arc::new(AllowAllConnections), None).unwrap();
 
     let addr = end2.local_addr().unwrap();
 
@@ -93,7 +93,7 @@ async fn ecdsa256_ecdsa384() {
     let key2 = EndpointKey::generate_for(mushi::SIGSCHEME_ECDSA384).unwrap();
 
     let end1 = Endpoint::new("[::1]:0", key1, Arc::new(AllowAllConnections), None).unwrap();
-    let mut end2 = Endpoint::new("[::1]:0", key2, Arc::new(AllowAllConnections), None).unwrap();
+    let end2 = Endpoint::new("[::1]:0", key2, Arc::new(AllowAllConnections), None).unwrap();
 
     let addr = end2.local_addr().unwrap();
 
@@ -118,7 +118,7 @@ async fn ecdsa256_ed25519() {
     let key2 = EndpointKey::generate_for(mushi::SIGSCHEME_ED25519).unwrap();
 
     let end1 = Endpoint::new("[::1]:0", key1, Arc::new(AllowAllConnections), None).unwrap();
-    let mut end2 = Endpoint::new("[::1]:0", key2, Arc::new(AllowAllConnections), None).unwrap();
+    let end2 = Endpoint::new("[::1]:0", key2, Arc::new(AllowAllConnections), None).unwrap();
 
     let addr = end2.local_addr().unwrap();
 
@@ -133,4 +133,15 @@ async fn ecdsa256_ed25519() {
 
     end1.connect(addr).await.unwrap();
     task.abort();
+}
+
+#[tokio::test]
+async fn thousand_keys() {
+    *SETUP;
+
+    let mut n = 0;
+    for _ in 0..1000 {
+        n += EndpointKey::generate().unwrap().public_key_pem().len();
+    }
+    dbg!(n);
 }

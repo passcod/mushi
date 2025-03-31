@@ -18,7 +18,7 @@ async fn connection() {
     let key2 = EndpointKey::generate().unwrap();
 
     let end1 = Endpoint::new("[::1]:0", key1, Arc::new(AllowAllConnections), None).unwrap();
-    let mut end2 = Endpoint::new("[::1]:0", key2, Arc::new(AllowAllConnections), None).unwrap();
+    let end2 = Endpoint::new("[::1]:0", key2, Arc::new(AllowAllConnections), None).unwrap();
 
     let addr = end2.local_addr().unwrap();
 
@@ -43,13 +43,13 @@ async fn datagram() {
     let key2 = EndpointKey::generate().unwrap();
 
     let end1 = Endpoint::new("[::1]:0", key1, Arc::new(AllowAllConnections), None).unwrap();
-    let mut end2 = Endpoint::new("[::1]:0", key2, Arc::new(AllowAllConnections), None).unwrap();
+    let end2 = Endpoint::new("[::1]:0", key2, Arc::new(AllowAllConnections), None).unwrap();
 
     let addr = end2.local_addr().unwrap();
 
     let task: JoinHandle<Result<(), Error>> = spawn(async move {
         if let Some(sesh) = end2.accept().await {
-            let mut sesh = sesh?;
+            let sesh = sesh?;
             let data = sesh.recv_datagram().await.unwrap();
             assert_eq!(data, "Hello");
             sesh.send_datagram("World".into()).unwrap();
@@ -59,7 +59,7 @@ async fn datagram() {
         Ok(())
     });
 
-    let mut sesh = end1.connect(addr).await.unwrap();
+    let sesh = end1.connect(addr).await.unwrap();
     sesh.send_datagram("Hello".into()).unwrap();
     let data = sesh.recv_datagram().await.unwrap();
     assert_eq!(data, "World");
@@ -75,13 +75,13 @@ async fn unidi() {
     let key2 = EndpointKey::generate().unwrap();
 
     let end1 = Endpoint::new("[::1]:0", key1, Arc::new(AllowAllConnections), None).unwrap();
-    let mut end2 = Endpoint::new("[::1]:0", key2, Arc::new(AllowAllConnections), None).unwrap();
+    let end2 = Endpoint::new("[::1]:0", key2, Arc::new(AllowAllConnections), None).unwrap();
 
     let addr = end2.local_addr().unwrap();
 
     let task: JoinHandle<Result<(), Error>> = spawn(async move {
         if let Some(sesh) = end2.accept().await {
-            let mut sesh = sesh?;
+            let sesh = sesh?;
             let data = sesh
                 .accept_uni()
                 .await
@@ -103,7 +103,7 @@ async fn unidi() {
         Ok(())
     });
 
-    let mut sesh = end1.connect(addr).await.unwrap();
+    let sesh = end1.connect(addr).await.unwrap();
     sesh.open_uni()
         .await
         .unwrap()
@@ -131,13 +131,13 @@ async fn bidi() {
     let key2 = EndpointKey::generate().unwrap();
 
     let end1 = Endpoint::new("[::1]:0", key1, Arc::new(AllowAllConnections), None).unwrap();
-    let mut end2 = Endpoint::new("[::1]:0", key2, Arc::new(AllowAllConnections), None).unwrap();
+    let end2 = Endpoint::new("[::1]:0", key2, Arc::new(AllowAllConnections), None).unwrap();
 
     let addr = end2.local_addr().unwrap();
 
     let task: JoinHandle<Result<(), Error>> = spawn(async move {
         if let Some(sesh) = end2.accept().await {
-            let mut sesh = sesh?;
+            let sesh = sesh?;
             let (mut s, mut r) = sesh.accept_bi().await.unwrap();
             s.write(b"World").await.unwrap();
             let data = r.read(5).await.unwrap().unwrap();
@@ -148,7 +148,7 @@ async fn bidi() {
         Ok(())
     });
 
-    let mut sesh = end1.connect(addr).await.unwrap();
+    let sesh = end1.connect(addr).await.unwrap();
     let (mut s, mut r) = sesh.open_bi().await.unwrap();
     s.write(b"Hello").await.unwrap();
     let data = r.read(5).await.unwrap().unwrap();

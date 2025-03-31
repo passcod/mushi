@@ -2,7 +2,7 @@ use std::sync::{Arc, LazyLock, Mutex};
 
 use mushi::{
     AllowAllConnections, AllowConnection, CertificateError, Endpoint, EndpointKey, Error,
-    SubjectPublicKeyInfoDer, UnixTime,
+    SubjectPublicKeyInfoDer,
 };
 use tokio::task::{JoinHandle, spawn};
 
@@ -37,7 +37,7 @@ async fn keyset() {
     let allower = Arc::new(AllowKeySet(vec![key1.clone(), key2.clone()]));
 
     let end1 = Endpoint::new("[::1]:0", key1, allower.clone(), None).unwrap();
-    let mut end2 = Endpoint::new("[::1]:0", key2, allower.clone(), None).unwrap();
+    let end2 = Endpoint::new("[::1]:0", key2, allower.clone(), None).unwrap();
     let end3 = Endpoint::new("[::1]:0", key3, allower, None).unwrap();
 
     let addr = end2.local_addr().unwrap();
