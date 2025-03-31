@@ -8,7 +8,7 @@ use std::{
 };
 
 use mushi::{
-    AllowConnection, CertificateError, SigScheme, SubjectPublicKeyInfoDer, UnixTime,
+    AllowConnection, CertificateError, SigScheme, SubjectPublicKeyInfoDer,
     quinn::congestion::{BbrConfig, ControllerFactory, CubicConfig, NewRenoConfig},
     rcgen,
 };
@@ -117,7 +117,8 @@ impl EndpointKey {
     /// Returns the PEM-encoded certificate.
     #[napi]
     pub fn make_certificate(&self) -> Result<String> {
-        self.0.make_certificate()
+        self.0
+            .make_certificate()
             .map_err(|err| Error::from_reason(format!("key: {err}")))
             .map(|c| c.pem())
     }
@@ -129,7 +130,7 @@ impl EndpointKey {
 pub struct Allower(Arc<AllowerImpl>);
 
 pub struct AllowerImpl {
-    allower: ThreadsafeFunction<(Buffer, i64), ErrorStrategy::Fatal>,
+    allower: ThreadsafeFunction<(Buffer,), ErrorStrategy::Fatal>,
     client_auth: bool,
 }
 
@@ -149,11 +150,10 @@ impl AllowConnection for AllowerImpl {
     fn allow_public_key(
         &self,
         key: SubjectPublicKeyInfoDer<'_>,
-        now: UnixTime,
     ) -> std::result::Result<(), CertificateError> {
         let ret = Arc::new(AtomicBool::new(false));
         self.allower.call_with_return_value(
-            (Buffer::from(&*key), now.as_secs() as _),
+            (Buffer::from(&*key),),
             ThreadsafeFunctionCallMode::Blocking,
             {
                 let ret = ret.clone();
@@ -192,10 +192,10 @@ impl Allower {
     /// an additional authorisation layer to restrict connections or resource access.
     #[napi(
         constructor,
-        ts_args_type = "allowPublicKey: (key: Buffer, now: number) => boolean, requireClientAuth?: boolean"
+        ts_args_type = "allowPublicKey: (key: Buffer) => boolean, requireClientAuth?: boolean"
     )]
     pub fn new(
-        allow_public_key: ThreadsafeFunction<(Buffer, i64), ErrorStrategy::Fatal>,
+        allow_public_key: ThreadsafeFunction<(Buffer,), ErrorStrategy::Fatal>,
         require_client_auth: Option<bool>,
     ) -> Self {
         let require_client_auth = require_client_auth.unwrap_or(true);

@@ -17,11 +17,7 @@ static SETUP: LazyLock<()> = LazyLock::new(|| {
 struct AllowKeySet(Vec<EndpointKey>);
 
 impl AllowConnection for AllowKeySet {
-    fn allow_public_key(
-        &self,
-        key: SubjectPublicKeyInfoDer<'_>,
-        _now: UnixTime,
-    ) -> Result<(), CertificateError> {
+    fn allow_public_key(&self, key: SubjectPublicKeyInfoDer<'_>) -> Result<(), CertificateError> {
         if self.0.iter().any(|ek| *ek.public_key_der() == *key) {
             Ok(())
         } else {
@@ -64,11 +60,7 @@ async fn keyset() {
 struct AllowSecondHit(Mutex<Vec<SubjectPublicKeyInfoDer<'static>>>);
 
 impl AllowConnection for AllowSecondHit {
-    fn allow_public_key(
-        &self,
-        key: SubjectPublicKeyInfoDer<'_>,
-        _now: UnixTime,
-    ) -> Result<(), CertificateError> {
+    fn allow_public_key(&self, key: SubjectPublicKeyInfoDer<'_>) -> Result<(), CertificateError> {
         let mut cache = self.0.lock().unwrap();
         if cache.iter().any(|ek| *ek == key) {
             Ok(())
@@ -89,8 +81,7 @@ async fn second_hit() {
 
     let allower = Arc::new(AllowAllConnections);
 
-    let mut end2 =
-        Endpoint::new("[::1]:0", key2, Arc::new(AllowSecondHit::default()), None).unwrap();
+    let end2 = Endpoint::new("[::1]:0", key2, Arc::new(AllowSecondHit::default()), None).unwrap();
     let end1 = Endpoint::new("[::1]:0", key1, allower.clone(), None).unwrap();
     let end3 = Endpoint::new("[::1]:0", key3, allower, None).unwrap();
 

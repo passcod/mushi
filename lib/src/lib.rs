@@ -55,10 +55,7 @@ use std::{
 };
 
 pub use rcgen;
-pub use rustls::{
-    CertificateError,
-    pki_types::{SubjectPublicKeyInfoDer, UnixTime},
-};
+pub use rustls::{CertificateError, pki_types::SubjectPublicKeyInfoDer};
 pub use url::Url;
 pub use web_transport_quinn::{self as web_transport, quinn, quinn::rustls};
 
@@ -76,7 +73,7 @@ use rustls::{
         danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier},
     },
     crypto::{CryptoProvider, WebPkiSupportedAlgorithms, verify_tls13_signature},
-    pki_types::{CertificateDer, PrivateKeyDer, ServerName, alg_id},
+    pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime, alg_id},
     server::{
         ClientHello, ParsedCertificate, ResolvesServerCert,
         danger::{ClientCertVerified, ClientCertVerifier},
@@ -274,14 +271,7 @@ pub trait AllowConnection: std::fmt::Debug + Send + Sync + 'static {
     /// Return `Ok(())` to allow the peer to connect (or be connected to), and `Err(_)` to reject
     /// the peer. You should select an appropriate [`CertificateError`]; if in doubt, use
     /// [`ApplicationVerificationFailure`](CertificateError::ApplicationVerificationFailure).
-    ///
-    /// `now` provides a normalised timestamp from within the TLS machinery, which can be used for
-    /// consistent calculations if time is a relevant decision factor.
-    fn allow_public_key(
-        &self,
-        key: SubjectPublicKeyInfoDer<'_>,
-        now: UnixTime,
-    ) -> Result<(), CertificateError>;
+    fn allow_public_key(&self, key: SubjectPublicKeyInfoDer<'_>) -> Result<(), CertificateError>;
 
     /// Whether incoming peers need to provide a certificate.
     ///
@@ -291,20 +281,28 @@ pub trait AllowConnection: std::fmt::Debug + Send + Sync + 'static {
     fn require_client_auth(&self) -> bool {
         true
     }
+
+    /// Whether validity periods are checked.
+    ///
+    /// This is `false` by default: keys are just-in-time and all that really matter, and validity
+    /// periods are a polite fiction to make the TLS look normal. It might be useful for hardening
+    /// to enable this; this will also require that the system clocks within the distributed
+    /// system are synchronised to within the validity period (±1 minute by default).
+    fn check_validity_period(&self) -> bool {
+        false
+    }
 }
 
 /// A convenience allower which accepts all public keys.
 ///
 /// This is not recommended for use in real applications, but may be useful for testing.
+///
+/// `require_client_auth` is `true`.
 #[derive(Debug, Clone, Copy)]
 pub struct AllowAllConnections;
 
 impl AllowConnection for AllowAllConnections {
-    fn allow_public_key(
-        &self,
-        _key: SubjectPublicKeyInfoDer<'_>,
-        _now: UnixTime,
-    ) -> Result<(), CertificateError> {
+    fn allow_public_key(&self, _key: SubjectPublicKeyInfoDer<'_>) -> Result<(), CertificateError> {
         Ok(())
     }
 }
@@ -320,11 +318,16 @@ impl ServerCertVerifier for ConnectionAllower {
         _intermediates: &[CertificateDer<'_>],
         _server_name: &ServerName<'_>,
         _ocsp_response: &[u8],
-        now: UnixTime,
+        _now: UnixTime,
     ) -> Result<ServerCertVerified, rustls::Error> {
         let cert = ParsedCertificate::try_from(end_entity)?;
+
+        if self.0.check_validity_period() {
+            todo!("check_validity_period");
+        }
+
         self.0
-            .allow_public_key(cert.subject_public_key_info(), now)
+            .allow_public_key(cert.subject_public_key_info())
             .map_err(rustls::Error::from)
             .and(Ok(ServerCertVerified::assertion()))
     }
@@ -367,11 +370,16 @@ impl ClientCertVerifier for ConnectionAllower {
         &self,
         end_entity: &CertificateDer<'_>,
         _intermediates: &[CertificateDer<'_>],
-        now: UnixTime,
+        _now: UnixTime,
     ) -> Result<ClientCertVerified, rustls::Error> {
         let cert = ParsedCertificate::try_from(end_entity)?;
+
+        if self.0.check_validity_period() {
+            todo!("check_validity_period");
+        }
+
         self.0
-            .allow_public_key(cert.subject_public_key_info(), now)
+            .allow_public_key(cert.subject_public_key_info())
             .map_err(rustls::Error::from)
             .and(Ok(ClientCertVerified::assertion()))
     }
@@ -506,8 +514,13 @@ impl Endpoint {
         let mut endpoint = None;
         for addr in bind_to.to_socket_addrs()? {
             match quinn::Endpoint::server(server_config.clone(), addr) {
-                Ok(s) => { endpoint = Some(s); break; },
-                Err(err) => { last_err = Some(err); }
+                Ok(s) => {
+                    endpoint = Some(s);
+                    break;
+                }
+                Err(err) => {
+                    last_err = Some(err);
+                }
             }
         }
         let mut endpoint = match (endpoint, last_err) {

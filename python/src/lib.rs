@@ -12,7 +12,7 @@ pub mod export {
     };
 
     use mushi::{
-        AllowConnection, CertificateError, SigScheme, SubjectPublicKeyInfoDer, UnixTime,
+        AllowConnection, CertificateError, SigScheme, SubjectPublicKeyInfoDer,
         quinn::congestion::{BbrConfig, ControllerFactory, CubicConfig, NewRenoConfig},
         rcgen,
     };
@@ -127,18 +127,14 @@ pub mod export {
         fn allow_public_key(
             &self,
             key: SubjectPublicKeyInfoDer<'_>,
-            now: UnixTime,
         ) -> std::result::Result<(), CertificateError> {
             let ret = Arc::new(AtomicBool::new(false));
 
             Python::with_gil(|py| {
-                let value = self
-                    .allower
-                    .call1(py, (key.as_ref(), now.as_secs()))
-                    .map_or(false, |r| {
-                        r.downcast_bound::<PyBool>(py)
-                            .map_or(false, |b| b.is_true())
-                    });
+                let value = self.allower.call1(py, (key.as_ref(),)).map_or(false, |r| {
+                    r.downcast_bound::<PyBool>(py)
+                        .map_or(false, |b| b.is_true())
+                });
                 ret.store(value, Ordering::SeqCst);
             });
 
