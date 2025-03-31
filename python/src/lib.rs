@@ -52,12 +52,14 @@ pub mod export {
             Err(BError::UnsupportedKeyType(format!("{:?}", kp.algorithm())))
         }
 
-        /// Serialize private key to PEM.
+        /// Private key as PEM.
+        #[getter]
         fn private_key_pem(&self) -> String {
             self.0.serialize_pem()
         }
 
-        /// Serialize public key to PEM.
+        /// Public key as PEM.
+        #[getter]
         fn public_key_pem(&self) -> String {
             self.0.public_key_pem()
         }
