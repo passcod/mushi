@@ -37,6 +37,9 @@ test("thousand keys", (t) => {
   let n = 0;
   for (let i; i < 1000; i += 1) {
     const k = EndpointKey.generate();
+    t.truthy(k);
+    t.truthy(k.publicKeyPem);
+    t.assert(typeof k.publicKeyPem === "string");
     n += k.publicKeyPem.length;
   }
   t.assert(n > 0);
