@@ -45,7 +45,7 @@ jobs:
           shopt -s dotglob
           mv python/* .
           rmdir python
-          sed -E -i 's|^mushi = \{ version = "([0-9.]+)".+$|mushi = "\1"|' Cargo.toml
+          sed -iE 's|^mushi = \{ version = "([0-9.]+)".+$|mushi = "\1"|' Cargo.toml
       - uses: actions/setup-python@v5
         with:
           python-version: 3.x
@@ -86,7 +86,7 @@ jobs:
           shopt -s dotglob
           mv python/* .
           rmdir python
-          sed -E -i 's|^mushi = \{ version = "([0-9.]+)".+$|mushi = "\1"|' Cargo.toml
+          sed -iE 's|^mushi = \{ version = "([0-9.]+)".+$|mushi = "\1"|' Cargo.toml
       - uses: actions/setup-python@v5
         with:
           python-version: 3.x
@@ -123,7 +123,7 @@ jobs:
           shopt -s dotglob
           mv python/* .
           rmdir python
-          sed -E -i 's|^mushi = \{ version = "([0-9.]+)".+$|mushi = "\1"|' Cargo.toml
+          sed -iE 's|^mushi = \{ version = "([0-9.]+)".+$|mushi = "\1"|' Cargo.toml
       - uses: actions/setup-python@v5
         with:
           python-version: 3.x
@@ -160,7 +160,7 @@ jobs:
           shopt -s dotglob
           mv python/* .
           rmdir python
-          sed -E -i 's|^mushi = \{ version = "([0-9.]+)".+$|mushi = "\1"|' Cargo.toml
+          sed -iE 's|^mushi = \{ version = "([0-9.]+)".+$|mushi = "\1"|' Cargo.toml
       - uses: actions/setup-python@v5
         with:
           python-version: 3.x
@@ -189,7 +189,7 @@ jobs:
           shopt -s dotglob
           mv python/* .
           rmdir python
-          sed -E -i 's|^mushi = \{ version = "([0-9.]+)".+$|mushi = "\1"|' Cargo.toml
+          sed -iE 's|^mushi = \{ version = "([0-9.]+)".+$|mushi = "\1"|' Cargo.toml
       - name: Build sdist
         uses: PyO3/maturin-action@v1
         with:
