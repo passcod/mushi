@@ -144,6 +144,8 @@ jobs:
         settings:
           - host: macos-13
             target: x86_64-apple-darwin
+          - host: macos-13
+            target: universal-apple-darwin
           - host: macos-latest
             target: universal-apple-darwin
           - host: ubuntu-latest
