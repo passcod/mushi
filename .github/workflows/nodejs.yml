@@ -134,7 +134,7 @@ jobs:
           path: nodejs/${{ env.APP_NAME }}.*.node
           if-no-files-found: error
   test-native-binding:
-    name: Test bindings on ${{ matrix.settings.target }} - node@${{ matrix.node }}
+    name: Test bindings on ${{ matrix.settings.host }} - node@${{ matrix.node }}
     needs:
       - build
       - universal-macOS
@@ -143,8 +143,6 @@ jobs:
       matrix:
         settings:
           - host: macos-13
-            target: x86_64-apple-darwin
-          - host: macos-13
             target: universal-apple-darwin
           - host: macos-latest
             target: universal-apple-darwin
@@ -152,8 +150,6 @@ jobs:
             target: x86_64-unknown-linux-gnu
           - host: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
-          - host: windows-latest
-            target: x86_64-pc-windows-msvc
           - host: windows-latest
             target: x86_64-pc-windows-msvc
         node:
