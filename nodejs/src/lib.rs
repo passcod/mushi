@@ -54,13 +54,13 @@ impl EndpointKey {
         )))
     }
 
-    /// Serialize private key to PEM.
+    /// The private key as PEM.
     #[napi(getter)]
     pub fn private_key_pem(&self) -> String {
         self.0.serialize_pem()
     }
 
-    /// Serialize public key to PEM.
+    /// The public key as PEM.
     #[napi(getter)]
     pub fn public_key_pem(&self) -> String {
         self.0.public_key_pem()
