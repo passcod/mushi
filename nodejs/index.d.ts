@@ -22,9 +22,9 @@ export declare class EndpointKey {
    * If the key is not ED25519 or ECDSA(256|384), this will error.
    */
   constructor(privateKeyPem: string)
-  /** Serialize private key to PEM. */
+  /** The private key as PEM. */
   get privateKeyPem(): string
-  /** Serialize public key to PEM. */
+  /** The public key as PEM. */
   get publicKeyPem(): string
   /** Generate a new random key pair in the default scheme. */
   static generate(): EndpointKey
