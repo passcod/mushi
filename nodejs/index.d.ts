@@ -23,9 +23,9 @@ export declare class EndpointKey {
    */
   constructor(privateKeyPem: string)
   /** Serialize private key to PEM. */
-  privateKeyPem(): string
+  get privateKeyPem(): string
   /** Serialize public key to PEM. */
-  publicKeyPem(): string
+  get publicKeyPem(): string
   /** Generate a new random key pair in the default scheme. */
   static generate(): EndpointKey
   /**
@@ -69,7 +69,7 @@ export declare class Allower {
    * cannot present a client certificate should be allowed. In that case, take care to implement
    * an additional authorisation layer to restrict connections or resource access.
    */
-  constructor(allowPublicKey: (key: Buffer, now: number) => boolean, requireClientAuth?: boolean)
+  constructor(allowPublicKey: (key: Buffer) => boolean, requireClientAuth?: boolean)
 }
 /**
  * The main entrypoint to create connections to, and accept connections from other Mushi peers.
@@ -105,12 +105,12 @@ export declare class Endpoint {
    * [IETF Draft]: https://datatracker.ietf.org/doc/draft-ietf-ccwg-bbr/02/
    */
   constructor(bindTo: string, key: EndpointKey, allower: Allower, cc?: string)
-  /** Get the local address the underlying socket is bound to. */
-  localAddr(): string
-  /** Get the number of connections (≈sessions) that are currently open. */
-  openConnections(): number
-  /** Get QUIC activity stats. */
-  stats(): EndpointStats
+  /** The local address the underlying socket is bound to. */
+  get localAddr(): string
+  /** The number of connections (≈sessions) that are currently open. */
+  get openConnections(): number
+  /** QUIC activity stats. */
+  get stats(): EndpointStats
   /**
    * Wait for all sessions on the endpoint to be cleanly shut down.
    *

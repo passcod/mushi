@@ -243,22 +243,25 @@ pub mod export {
             )?))
         }
 
-        /// Get the local address the underlying socket is bound to.
+        /// The local address the underlying socket is bound to.
+        #[getter]
         fn local_addr(&self) -> BResult<String> {
             Ok(self.0.local_addr().map(|addr| addr.to_string())?)
         }
 
-        /// Get the number of connections (≈sessions) that are currently open.
+        /// The number of connections (≈sessions) that are currently open.
+        #[getter]
         fn open_connections(&self) -> i64 {
             self.0.open_connections() as _
         }
 
-        /// Get QUIC activity stats.
+        /// QUIC activity stats.
         ///
         /// - `accepted_handshakes`
         /// - `outgoing_handshakes`
         /// - `refused_handshakes`
         /// - `ignored_handshakes`
+        #[getter]
         fn stats(&self) -> HashMap<&'static str, u64> {
             let stats = self.0.stats();
             let mut dict = HashMap::with_capacity(4);

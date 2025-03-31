@@ -269,8 +269,8 @@ impl Endpoint {
             .map_err(|err| Error::from_reason(format!("endpoint: {err}")))
     }
 
-    /// Get the local address the underlying socket is bound to.
-    #[napi]
+    /// The local address the underlying socket is bound to.
+    #[napi(getter)]
     pub fn local_addr(&self) -> Result<String> {
         self.0
             .local_addr()
@@ -278,14 +278,14 @@ impl Endpoint {
             .map_err(|err| Error::from_reason(format!("endpoint: {err}")))
     }
 
-    /// Get the number of connections (≈sessions) that are currently open.
-    #[napi]
+    /// The number of connections (≈sessions) that are currently open.
+    #[napi(getter)]
     pub fn open_connections(&self) -> i64 {
         self.0.open_connections() as _
     }
 
-    /// Get QUIC activity stats.
-    #[napi]
+    /// QUIC activity stats.
+    #[napi(getter)]
     pub fn stats(&self) -> EndpointStats {
         self.0.stats().into()
     }
