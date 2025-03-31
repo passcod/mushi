@@ -3,7 +3,7 @@ name: Node.js
 env:
   DEBUG: napi:*
   APP_NAME: mushi
-  MACOSX_DEPLOYMENT_TARGET: '10.13'
+  MACOSX_DEPLOYMENT_TARGET: "10.13"
 
 permissions:
   contents: write
@@ -15,7 +15,7 @@ on:
     branches:
       - main
     tags:
-      - 'nodejs-*'
+      - "nodejs-*"
     paths:
       - nodejs/**
       - .github/workflows/nodejs.yml
@@ -89,21 +89,13 @@ jobs:
     runs-on: ${{ matrix.settings.host }}
     steps:
       - uses: actions/checkout@v4
-      - name: Move nodejs files to root
-        shell: bash
-        working-directory: nodejs
-        run: |
-          shopt -s dotglob
-          mv nodejs/* .
-          rmdir nodejs
-          ln -s lib ..
       - name: Setup node
         if: ${{ !matrix.settings.docker }}
         uses: actions/setup-node@v4
-        working-directory: nodejs
         with:
           node-version: 20
           cache: npm
+          cache-dependency-path: nodejs/package-lock.json
       - name: Install
         if: ${{ !matrix.settings.docker }}
         run: |
@@ -113,7 +105,6 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - if: ${{ matrix.settings.target == 'armv7-unknown-linux-gnueabihf' || matrix.settings.target == 'armv7-unknown-linux-musleabihf' }}
         uses: goto-bus-stop/setup-zig@v2
-        working-directory: nodejs
         with:
           version: 0.13.0
       - name: Setup toolchain
@@ -127,10 +118,9 @@ jobs:
       - name: Build in docker
         if: ${{ matrix.settings.docker }}
         uses: addnab/docker-run-action@v3
-        working-directory: nodejs
         with:
           image: ${{ matrix.settings.docker }}
-          options: '--user 0:0 -v ${{ github.workspace }}/.cargo-cache/git/db:/usr/local/cargo/git/db -v ${{ github.workspace }}/.cargo/registry/cache:/usr/local/cargo/registry/cache -v ${{ github.workspace }}/.cargo/registry/index:/usr/local/cargo/registry/index -v ${{ github.workspace }}:/build -w /build'
+          options: "--user 0:0 -v ${{ github.workspace }}/.cargo-cache/git/db:/usr/local/cargo/git/db -v ${{ github.workspace }}/.cargo/registry/cache:/usr/local/cargo/registry/cache -v ${{ github.workspace }}/.cargo/registry/index:/usr/local/cargo/registry/index -v ${{ github.workspace }}:/build -w /build/nodejs"
           run: ${{ matrix.settings.build }}
       - name: Build
         working-directory: nodejs
@@ -139,10 +129,9 @@ jobs:
         shell: bash
       - name: Upload artifact
         uses: actions/upload-artifact@v4
-        working-directory: nodejs
         with:
           name: bindings-${{ matrix.settings.target }}
-          path: ${{ env.APP_NAME }}.*.node
+          path: nodejs/${{ env.APP_NAME }}.*.node
           if-no-files-found: error
   test-macOS-windows-binding:
     name: Test bindings on ${{ matrix.settings.target }} - node@${{ matrix.node }}
@@ -157,26 +146,25 @@ jobs:
           - host: windows-latest
             target: x86_64-pc-windows-msvc
         node:
-          - '18'
-          - '20'
+          - "18"
+          - "20"
     runs-on: ${{ matrix.settings.host }}
     steps:
       - uses: actions/checkout@v4
       - name: Setup node
         uses: actions/setup-node@v4
-        working-directory: nodejs
         with:
           node-version: ${{ matrix.node }}
           cache: npm
+          cache-dependency-path: nodejs/package-lock.json
           architecture: x64
       - name: Install dependencies
         working-directory: nodejs
         run: npm install
       - name: Download artifacts
         uses: actions/download-artifact@v4
-        working-directory: nodejs
         with:
-          name: bindings-${{ matrix.settings.target }}
+          name: nodejs/bindings-${{ matrix.settings.target }}
           path: .
       - name: List packages
         working-directory: nodejs
@@ -193,33 +181,31 @@ jobs:
       fail-fast: false
       matrix:
         node:
-          - '18'
-          - '20'
+          - "18"
+          - "20"
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: Setup node
         uses: actions/setup-node@v4
-        working-directory: nodejs
         with:
           node-version: ${{ matrix.node }}
           cache: npm
+          cache-dependency-path: nodejs/package-lock.json
       - name: Install dependencies
         working-directory: nodejs
         run: npm install
       - name: Download artifacts
         uses: actions/download-artifact@v4
-        working-directory: nodejs
         with:
           name: bindings-x86_64-unknown-linux-gnu
-          path: .
+          path: nodejs
       - name: List packages
         working-directory: nodejs
         run: ls -R .
         shell: bash
       - name: Test bindings
-        working-directory: nodejs
-        run: docker run --rm -v $(pwd):/build -w /build node:${{ matrix.node }}-slim npm run test
+        run: docker run --rm -v $(pwd):/build -w /build/nodejs node:${{ matrix.node }}-slim npm run test
   test-linux-x64-musl-binding:
     name: Test bindings on x86_64-unknown-linux-musl - node@${{ matrix.node }}
     needs:
@@ -228,33 +214,31 @@ jobs:
       fail-fast: false
       matrix:
         node:
-          - '18'
-          - '20'
+          - "18"
+          - "20"
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: Setup node
         uses: actions/setup-node@v4
-        working-directory: nodejs
         with:
           node-version: ${{ matrix.node }}
           cache: npm
+          cache-dependency-path: nodejs/package-lock.json
       - name: Install dependencies
         working-directory: nodejs
         run: npm install --libc musl
       - name: Download artifacts
         uses: actions/download-artifact@v4
-        working-directory: nodejs
         with:
           name: bindings-x86_64-unknown-linux-musl
-          path: .
+          path: nodejs
       - name: List packages
         working-directory: nodejs
         run: ls -R .
         shell: bash
       - name: Test bindings
-        working-directory: nodejs
-        run: docker run --rm -v $(pwd):/build -w /build node:${{ matrix.node }}-alpine npm run test
+        run: docker run --rm -v $(pwd):/build -w /build/nodejs node:${{ matrix.node }}-alpine npm run test
   test-linux-aarch64-gnu-binding:
     name: Test bindings on aarch64-unknown-linux-gnu - node@${{ matrix.node }}
     needs:
@@ -263,17 +247,22 @@ jobs:
       fail-fast: false
       matrix:
         node:
-          - '18'
-          - '20'
+          - "18"
+          - "20"
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Setup node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+          cache-dependency-path: nodejs/package-lock.json
       - name: Download artifacts
         uses: actions/download-artifact@v4
-        working-directory: nodejs
         with:
           name: bindings-aarch64-unknown-linux-gnu
-          path: .
+          path: nodejs
       - name: List packages
         working-directory: nodejs
         run: ls -R .
@@ -283,16 +272,14 @@ jobs:
         run: npm install --cpu arm64 --libc glibc
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
-        working-directory: nodejs
         with:
           platforms: arm64
       - run: docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
       - name: Setup and run tests
         uses: addnab/docker-run-action@v3
-        working-directory: nodejs
         with:
           image: node:${{ matrix.node }}-slim
-          options: '--platform linux/arm64 -v ${{ github.workspace }}:/build -w /build'
+          options: "--platform linux/arm64 -v ${{ github.workspace }}:/build -w /build/nodejs"
           run: |
             set -e
             npm run test
@@ -304,12 +291,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Setup node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: nodejs/package-lock.json
       - name: Download artifacts
         uses: actions/download-artifact@v4
-        working-directory: nodejs
         with:
           name: bindings-aarch64-unknown-linux-musl
-          path: .
+          path: nodejs
       - name: List packages
         working-directory: nodejs
         run: ls -R .
@@ -319,20 +311,15 @@ jobs:
         run: npm install --cpu arm64 --libc musl
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
-        working-directory: nodejs
         with:
           platforms: arm64
       - run: docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
-        working-directory: nodejs
       - name: Setup and run tests
         uses: addnab/docker-run-action@v3
-        working-directory: nodejs
         with:
           image: node:lts-alpine
-          options: '--platform linux/arm64 -v ${{ github.workspace }}:/build -w /build'
-          run: |
-            set -e
-            npm run test
+          options: "--platform linux/arm64 -v ${{ github.workspace }}:/build -w /build/nodejs"
+          run: npm run test
   test-linux-arm-gnueabihf-binding:
     name: Test bindings on armv7-unknown-linux-gnueabihf - node@${{ matrix.node }}
     needs:
@@ -341,17 +328,22 @@ jobs:
       fail-fast: false
       matrix:
         node:
-          - '18'
-          - '20'
+          - "18"
+          - "20"
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Setup node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+          cache-dependency-path: nodejs/package-lock.json
       - name: Download artifacts
         uses: actions/download-artifact@v4
-        working-directory: nodejs
         with:
           name: bindings-armv7-unknown-linux-gnueabihf
-          path: .
+          path: nodejs
       - name: List packages
         working-directory: nodejs
         run: ls -R .
@@ -361,16 +353,14 @@ jobs:
         run: npm install --cpu arm
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
-        working-directory: nodejs
         with:
           platforms: arm
       - run: docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
       - name: Setup and run tests
         uses: addnab/docker-run-action@v3
-        working-directory: nodejs
         with:
           image: node:${{ matrix.node }}-bullseye-slim
-          options: '--platform linux/arm/v7 -v ${{ github.workspace }}:/build -w /build'
+          options: "--platform linux/arm/v7 -v ${{ github.workspace }}:/build -w /build/nodejs"
           run: |
             set -e
             npm run test
@@ -382,44 +372,33 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Move nodejs files to root
-        shell: bash
-        working-directory: nodejs
-        run: |
-          shopt -s dotglob
-          mv nodejs/* .
-          rmdir nodejs
-          ln -s lib ..
       - name: Setup node
         uses: actions/setup-node@v4
-        working-directory: nodejs
         with:
           node-version: 20
           cache: npm
+          cache-dependency-path: nodejs/package-lock.json
       - name: Install dependencies
         working-directory: nodejs
         run: npm install
       - name: Download macOS x64 artifact
         uses: actions/download-artifact@v4
-        working-directory: nodejs
         with:
           name: bindings-x86_64-apple-darwin
-          path: artifacts
+          path: nodejs/artifacts
       - name: Download macOS arm64 artifact
         uses: actions/download-artifact@v4
-        working-directory: nodejs
         with:
           name: bindings-aarch64-apple-darwin
-          path: artifacts
+          path: nodejs/artifacts
       - name: Combine binaries
         working-directory: nodejs
         run: npm run universal
       - name: Upload artifact
         uses: actions/upload-artifact@v4
-        working-directory: nodejs
         with:
           name: bindings-universal-apple-darwin
-          path: ${{ env.APP_NAME }}.*.node
+          path: nodejs/${{ env.APP_NAME }}.*.node
           if-no-files-found: error
   publish:
     name: Publish
@@ -436,18 +415,17 @@ jobs:
       - uses: actions/checkout@v4
       - name: Setup node
         uses: actions/setup-node@v4
-        working-directory: nodejs
         with:
           node-version: 20
           cache: npm
+          cache-dependency-path: nodejs/package-lock.json
       - name: Install dependencies
         working-directory: nodejs
         run: npm install
       - name: Download all artifacts
         uses: actions/download-artifact@v4
-        working-directory: nodejs
         with:
-          path: artifacts
+          path: nodejs/artifacts
       - name: Move artifacts
         working-directory: nodejs
         run: npm run artifacts
