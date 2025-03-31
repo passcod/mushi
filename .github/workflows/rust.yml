@@ -1,0 +1,39 @@
+name: Rust
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+    paths:
+      - lib/**
+      - Cargo.*
+      - .github/workflows/rust.yml
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        command:
+          - test
+          - clippy
+        host:
+          - macos-13
+          - macos-latest
+          - windows-latest
+          - ubuntu-latest
+          - ubuntu-22.04-arm
+          - ubuntu-24.04-arm
+    name: ${{ matrix.command }} ${{ matrix.host }}
+    runs-on: ${{ matrix.host }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install
+        run: |
+          rustup toolchain install --profile minimal --no-self-update stable
+          rustup default stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo ${{ matrix.command }}
