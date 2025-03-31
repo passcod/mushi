@@ -27,6 +27,7 @@ const SUPPORTED_SIGSCHEMES: &[SigScheme] = &[
     mushi::SIGSCHEME_ECDSA384,
 ];
 
+/// A key pair that identifies and authenticates an `Endpoint`.
 #[napi]
 #[derive(Debug, Clone)]
 pub struct EndpointKey(mushi::EndpointKey);
@@ -226,7 +227,8 @@ impl Endpoint {
     /// `localAddr()` to discover the randomly-assigned port.
     ///
     /// If `bind_to` resolves to multiple socket addresses, the first that succeeds creation of the
-    /// socket will be used.
+    /// socket will be used. `getaddrinfo()` or equivalent is used; to control DNS resolution, do
+    /// that yourself and pass an IP address and port.
     ///
     /// `allower` is the trust policy for remote peers: incoming (client certificate) and outgoing
     /// (server certificate) peers will have their public key extracted and checked by the
@@ -248,8 +250,6 @@ impl Endpoint {
         allower: &Allower,
         cc: Option<String>,
     ) -> Result<Self> {
-        *SETUP;
-
         let cc: Arc<dyn ControllerFactory + Send + Sync + 'static> =
             match cc.map(|s| s.to_ascii_lowercase()).as_deref() {
                 Some("cubic") | None => Arc::new(CubicConfig::default()),
@@ -261,6 +261,8 @@ impl Endpoint {
                     )));
                 }
             };
+
+        *SETUP;
 
         mushi::Endpoint::new(bind_to, key.0.clone(), allower.0.clone(), Some(cc))
             .map(Self)
@@ -599,7 +601,7 @@ impl SendStream {
 
     /// Write the entire buffer to the stream.
     #[napi]
-    pub async fn read_buf(&self, buf: Buffer) -> Result<()> {
+    pub async fn write(&self, buf: Buffer) -> Result<()> {
         self.0
             .lock()
             .await

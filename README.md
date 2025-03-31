@@ -43,7 +43,7 @@ Mushi is [a Rust crate][lib-rust] ([docs][docs-rust]), with some foreign interfa
 convenience:
 
 - [Node.js][lib-node] ([docs][docs-node])
-- [Python][lib-python] ([docs][docs-python]) (TODO!)
+- [Python][lib-python] ([docs][docs-python]) (experimental!)
 - [a CLI tool][cli] ([docs][docs-cli]) (TODO!)
 
 Mushi is also nothing special: as long as you have TLS-level control for your WebTransport
@@ -54,7 +54,7 @@ PKI, match public keys instead, and prefer issuing short-lived certificates on t
 [docs-rust]: https://docs.rs/mushi
 [lib-node]: https://www.npmjs.com/package/mushi
 [docs-node]: https://passcod.github.io/mushi/js/
-[lib-python]: https://pypi.org/mushi-todo
+[lib-python]: https://pypi.org/pymushi
 [docs-python]: https://todo.example.com
 [cli]: https://lib.rs/crate/mushi-cli
 [docs-cli]: https://github.com/passcod/mushi/blob/main/cli/README.md
