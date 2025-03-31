@@ -35,7 +35,7 @@ test("cert types", (t) => {
 
 test("thousand keys", (t) => {
   let n = 0;
-  for (let i; i < 1000; i += 1) {
+  for (let i = 0; i < 1000; i += 1) {
     const k = EndpointKey.generate();
     t.truthy(k);
     t.truthy(k.publicKeyPem);
