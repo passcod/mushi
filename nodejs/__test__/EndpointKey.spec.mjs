@@ -17,11 +17,11 @@ test("validity accessors", (t) => {
 
 test("key types", (t) => {
   const k1 = EndpointKey.generateFor("ed25519");
-  t.is(k1.publicKeyPem.length, 113);
+  t.is(k1.publicKeyPem.replaceAll(/\s+/g, "").length, 106);
   const k2 = EndpointKey.generateFor("ecdsa256");
-  t.is(k2.publicKeyPem.length, 178);
+  t.is(k2.publicKeyPem.replaceAll(/\s+/g, "").length, 170);
   const k3 = EndpointKey.generateFor("ecdsa384");
-  t.is(k3.publicKeyPem.length, 215);
+  t.is(k3.publicKeyPem.replaceAll(/\s+/g, "").length, 206);
 });
 
 test("cert types", (t) => {
