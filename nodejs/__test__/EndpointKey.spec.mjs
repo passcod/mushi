@@ -3,8 +3,8 @@ import test from "ava";
 import { EndpointKey } from "../index.js";
 
 test("generate and round trip a key", (t) => {
-  const pem1 = EndpointKey.generate().privateKeyPem();
-  const pem2 = new EndpointKey(pem1).privateKeyPem();
+  const pem1 = EndpointKey.generate().privateKeyPem;
+  const pem2 = new EndpointKey(pem1).privateKeyPem;
   t.is(pem1, pem2);
 });
 
@@ -17,11 +17,11 @@ test("validity accessors", (t) => {
 
 test("key types", (t) => {
   const k1 = EndpointKey.generateFor("ed25519");
-  t.is(k1.publicKeyPem().replaceAll(/\s+/g, "").length, 106);
+  t.is(k1.publicKeyPem.replaceAll(/\s+/g, "").length, 106);
   const k2 = EndpointKey.generateFor("ecdsa256");
-  t.is(k2.publicKeyPem().replaceAll(/\s+/g, "").length, 170);
+  t.is(k2.publicKeyPem.replaceAll(/\s+/g, "").length, 170);
   const k3 = EndpointKey.generateFor("ecdsa384");
-  t.is(k3.publicKeyPem().replaceAll(/\s+/g, "").length, 206);
+  t.is(k3.publicKeyPem.replaceAll(/\s+/g, "").length, 206);
 });
 
 test("cert types", (t) => {
@@ -38,9 +38,9 @@ test("thousand keys", (t) => {
   for (let i = 0; i < 1000; i += 1) {
     const k = EndpointKey.generate();
     t.truthy(k);
-    t.truthy(k.publicKeyPem());
-    t.assert(typeof k.publicKeyPem() === "string");
-    n += k.publicKeyPem().length;
+    t.truthy(k.publicKeyPem);
+    t.assert(typeof k.publicKeyPem === "string");
+    n += k.publicKeyPem.length;
   }
   t.assert(n > 0);
 });
