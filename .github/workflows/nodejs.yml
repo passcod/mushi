@@ -137,6 +137,7 @@ jobs:
     name: Test bindings on ${{ matrix.settings.target }} - node@${{ matrix.node }}
     needs:
       - build
+      - universal-macOS
     strategy:
       fail-fast: false
       matrix:
@@ -145,9 +146,9 @@ jobs:
             target: x86_64-apple-darwin
           - host: macos-latest
             target: universal-apple-darwin
-          - host: ubunbu-latest
+          - host: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-          - host: ubunbu-24.04-arm
+          - host: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
           - host: windows-latest
             target: x86_64-pc-windows-msvc
