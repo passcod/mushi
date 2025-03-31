@@ -89,19 +89,18 @@ jobs:
     runs-on: ${{ matrix.settings.host }}
     steps:
       - uses: actions/checkout@v4
-        with:
-          sparse-checkout: nodejs
-          sparse-checkout-cone-mode: false
       - name: Move nodejs files to root
         shell: bash
+        working-directory: nodejs
         run: |
           shopt -s dotglob
           mv nodejs/* .
           rmdir nodejs
-          node -e 'f=require("fs");c=f.readFileSync("Cargo.toml");f.writeFileSync("Cargo.toml",c.toString().replace(/^mushi = [{] version = "([0-9.]+)".+$/, (_,v) => `mushi = "${v}"`))'
+          ln -s lib ..
       - name: Setup node
-        uses: actions/setup-node@v4
         if: ${{ !matrix.settings.docker }}
+        uses: actions/setup-node@v4
+        working-directory: nodejs
         with:
           node-version: 20
           cache: npm
@@ -112,29 +111,35 @@ jobs:
           rustup default stable
           rustup target add ${{ matrix.settings.target }}
       - uses: Swatinem/rust-cache@v2
-      - uses: goto-bus-stop/setup-zig@v2
-        if: ${{ matrix.settings.target == 'armv7-unknown-linux-gnueabihf' || matrix.settings.target == 'armv7-unknown-linux-musleabihf' }}
+      - if: ${{ matrix.settings.target == 'armv7-unknown-linux-gnueabihf' || matrix.settings.target == 'armv7-unknown-linux-musleabihf' }}
+        uses: goto-bus-stop/setup-zig@v2
+        working-directory: nodejs
         with:
           version: 0.13.0
       - name: Setup toolchain
-        run: ${{ matrix.settings.setup }}
         if: ${{ matrix.settings.setup }}
+        working-directory: nodejs
+        run: ${{ matrix.settings.setup }}
         shell: bash
       - name: Install dependencies
+        working-directory: nodejs
         run: npm install
       - name: Build in docker
-        uses: addnab/docker-run-action@v3
         if: ${{ matrix.settings.docker }}
+        uses: addnab/docker-run-action@v3
+        working-directory: nodejs
         with:
           image: ${{ matrix.settings.docker }}
           options: '--user 0:0 -v ${{ github.workspace }}/.cargo-cache/git/db:/usr/local/cargo/git/db -v ${{ github.workspace }}/.cargo/registry/cache:/usr/local/cargo/registry/cache -v ${{ github.workspace }}/.cargo/registry/index:/usr/local/cargo/registry/index -v ${{ github.workspace }}:/build -w /build'
           run: ${{ matrix.settings.build }}
       - name: Build
+        working-directory: nodejs
         run: ${{ matrix.settings.build }}
         if: ${{ !matrix.settings.docker }}
         shell: bash
       - name: Upload artifact
         uses: actions/upload-artifact@v4
+        working-directory: nodejs
         with:
           name: bindings-${{ matrix.settings.target }}
           path: ${{ env.APP_NAME }}.*.node
@@ -157,33 +162,28 @@ jobs:
     runs-on: ${{ matrix.settings.host }}
     steps:
       - uses: actions/checkout@v4
-        with:
-          sparse-checkout: nodejs
-          sparse-checkout-cone-mode: false
-      - name: Move nodejs files to root
-        shell: bash
-        run: |
-          shopt -s dotglob
-          mv nodejs/* .
-          rmdir nodejs
-          node -e 'f=require("fs");c=f.readFileSync("Cargo.toml");f.writeFileSync("Cargo.toml",c.toString().replace(/^mushi = [{] version = "([0-9.]+)".+$/, (_,v) => `mushi = "${v}"`))'
       - name: Setup node
         uses: actions/setup-node@v4
+        working-directory: nodejs
         with:
           node-version: ${{ matrix.node }}
           cache: npm
           architecture: x64
       - name: Install dependencies
+        working-directory: nodejs
         run: npm install
       - name: Download artifacts
         uses: actions/download-artifact@v4
+        working-directory: nodejs
         with:
           name: bindings-${{ matrix.settings.target }}
           path: .
       - name: List packages
+        working-directory: nodejs
         run: ls -R .
         shell: bash
       - name: Test bindings
+        working-directory: nodejs
         run: npm run test
   test-linux-x64-gnu-binding:
     name: Test bindings on Linux-x64-gnu - node@${{ matrix.node }}
@@ -198,32 +198,27 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          sparse-checkout: nodejs
-          sparse-checkout-cone-mode: false
-      - name: Move nodejs files to root
-        shell: bash
-        run: |
-          shopt -s dotglob
-          mv nodejs/* .
-          rmdir nodejs
-          node -e 'f=require("fs");c=f.readFileSync("Cargo.toml");f.writeFileSync("Cargo.toml",c.toString().replace(/^mushi = [{] version = "([0-9.]+)".+$/, (_,v) => `mushi = "${v}"`))'
       - name: Setup node
         uses: actions/setup-node@v4
+        working-directory: nodejs
         with:
           node-version: ${{ matrix.node }}
           cache: npm
       - name: Install dependencies
+        working-directory: nodejs
         run: npm install
       - name: Download artifacts
         uses: actions/download-artifact@v4
+        working-directory: nodejs
         with:
           name: bindings-x86_64-unknown-linux-gnu
           path: .
       - name: List packages
+        working-directory: nodejs
         run: ls -R .
         shell: bash
       - name: Test bindings
+        working-directory: nodejs
         run: docker run --rm -v $(pwd):/build -w /build node:${{ matrix.node }}-slim npm run test
   test-linux-x64-musl-binding:
     name: Test bindings on x86_64-unknown-linux-musl - node@${{ matrix.node }}
@@ -238,33 +233,27 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          sparse-checkout: nodejs
-          sparse-checkout-cone-mode: false
-      - name: Move nodejs files to root
-        shell: bash
-        run: |
-          shopt -s dotglob
-          mv nodejs/* .
-          rmdir nodejs
-          node -e 'f=require("fs");c=f.readFileSync("Cargo.toml");f.writeFileSync("Cargo.toml",c.toString().replace(/^mushi = [{] version = "([0-9.]+)".+$/, (_,v) => `mushi = "${v}"`))'
       - name: Setup node
         uses: actions/setup-node@v4
+        working-directory: nodejs
         with:
           node-version: ${{ matrix.node }}
           cache: npm
       - name: Install dependencies
-        run: |
-          npm install --libc musl
+        working-directory: nodejs
+        run: npm install --libc musl
       - name: Download artifacts
         uses: actions/download-artifact@v4
+        working-directory: nodejs
         with:
           name: bindings-x86_64-unknown-linux-musl
           path: .
       - name: List packages
+        working-directory: nodejs
         run: ls -R .
         shell: bash
       - name: Test bindings
+        working-directory: nodejs
         run: docker run --rm -v $(pwd):/build -w /build node:${{ matrix.node }}-alpine npm run test
   test-linux-aarch64-gnu-binding:
     name: Test bindings on aarch64-unknown-linux-gnu - node@${{ matrix.node }}
@@ -279,34 +268,28 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          sparse-checkout: nodejs
-          sparse-checkout-cone-mode: false
-      - name: Move nodejs files to root
-        shell: bash
-        run: |
-          shopt -s dotglob
-          mv nodejs/* .
-          rmdir nodejs
-          node -e 'f=require("fs");c=f.readFileSync("Cargo.toml");f.writeFileSync("Cargo.toml",c.toString().replace(/^mushi = [{] version = "([0-9.]+)".+$/, (_,v) => `mushi = "${v}"`))'
       - name: Download artifacts
         uses: actions/download-artifact@v4
+        working-directory: nodejs
         with:
           name: bindings-aarch64-unknown-linux-gnu
           path: .
       - name: List packages
+        working-directory: nodejs
         run: ls -R .
         shell: bash
       - name: Install dependencies
-        run: |
-          npm install --cpu arm64 --libc glibc
+        working-directory: nodejs
+        run: npm install --cpu arm64 --libc glibc
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
+        working-directory: nodejs
         with:
           platforms: arm64
       - run: docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
       - name: Setup and run tests
         uses: addnab/docker-run-action@v3
+        working-directory: nodejs
         with:
           image: node:${{ matrix.node }}-slim
           options: '--platform linux/arm64 -v ${{ github.workspace }}:/build -w /build'
@@ -321,33 +304,29 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          sparse-checkout: nodejs
-          sparse-checkout-cone-mode: false
-      - name: Move nodejs files to root
-        shell: bash
-        run: |
-          shopt -s dotglob
-          mv nodejs/* .
-          rmdir nodejs
-          node -e 'f=require("fs");c=f.readFileSync("Cargo.toml");f.writeFileSync("Cargo.toml",c.toString().replace(/^mushi = [{] version = "([0-9.]+)".+$/, (_,v) => `mushi = "${v}"`))'
       - name: Download artifacts
         uses: actions/download-artifact@v4
+        working-directory: nodejs
         with:
           name: bindings-aarch64-unknown-linux-musl
           path: .
       - name: List packages
+        working-directory: nodejs
         run: ls -R .
         shell: bash
       - name: Install dependencies
+        working-directory: nodejs
         run: npm install --cpu arm64 --libc musl
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
+        working-directory: nodejs
         with:
           platforms: arm64
       - run: docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
+        working-directory: nodejs
       - name: Setup and run tests
         uses: addnab/docker-run-action@v3
+        working-directory: nodejs
         with:
           image: node:lts-alpine
           options: '--platform linux/arm64 -v ${{ github.workspace }}:/build -w /build'
@@ -367,34 +346,28 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          sparse-checkout: nodejs
-          sparse-checkout-cone-mode: false
-      - name: Move nodejs files to root
-        shell: bash
-        run: |
-          shopt -s dotglob
-          mv nodejs/* .
-          rmdir nodejs
-          node -e 'f=require("fs");c=f.readFileSync("Cargo.toml");f.writeFileSync("Cargo.toml",c.toString().replace(/^mushi = [{] version = "([0-9.]+)".+$/, (_,v) => `mushi = "${v}"`))'
       - name: Download artifacts
         uses: actions/download-artifact@v4
+        working-directory: nodejs
         with:
           name: bindings-armv7-unknown-linux-gnueabihf
           path: .
       - name: List packages
+        working-directory: nodejs
         run: ls -R .
         shell: bash
       - name: Install dependencies
-        run: |
-          npm install --cpu arm
+        working-directory: nodejs
+        run: npm install --cpu arm
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
+        working-directory: nodejs
         with:
           platforms: arm
       - run: docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
       - name: Setup and run tests
         uses: addnab/docker-run-action@v3
+        working-directory: nodejs
         with:
           image: node:${{ matrix.node }}-bullseye-slim
           options: '--platform linux/arm/v7 -v ${{ github.workspace }}:/build -w /build'
@@ -409,37 +382,41 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          sparse-checkout: nodejs
-          sparse-checkout-cone-mode: false
       - name: Move nodejs files to root
         shell: bash
+        working-directory: nodejs
         run: |
           shopt -s dotglob
           mv nodejs/* .
           rmdir nodejs
-          node -e 'f=require("fs");c=f.readFileSync("Cargo.toml");f.writeFileSync("Cargo.toml",c.toString().replace(/^mushi = [{] version = "([0-9.]+)".+$/, (_,v) => `mushi = "${v}"`))'
+          ln -s lib ..
       - name: Setup node
         uses: actions/setup-node@v4
+        working-directory: nodejs
         with:
           node-version: 20
           cache: npm
       - name: Install dependencies
+        working-directory: nodejs
         run: npm install
       - name: Download macOS x64 artifact
         uses: actions/download-artifact@v4
+        working-directory: nodejs
         with:
           name: bindings-x86_64-apple-darwin
           path: artifacts
       - name: Download macOS arm64 artifact
         uses: actions/download-artifact@v4
+        working-directory: nodejs
         with:
           name: bindings-aarch64-apple-darwin
           path: artifacts
       - name: Combine binaries
+        working-directory: nodejs
         run: npm run universal
       - name: Upload artifact
         uses: actions/upload-artifact@v4
+        working-directory: nodejs
         with:
           name: bindings-universal-apple-darwin
           path: ${{ env.APP_NAME }}.*.node
@@ -457,35 +434,32 @@ jobs:
       - universal-macOS
     steps:
       - uses: actions/checkout@v4
-        with:
-          sparse-checkout: nodejs
-          sparse-checkout-cone-mode: false
-      - name: Move nodejs files to root
-        shell: bash
-        run: |
-          shopt -s dotglob
-          mv nodejs/* .
-          rmdir nodejs
-          node -e 'f=require("fs");c=f.readFileSync("Cargo.toml");f.writeFileSync("Cargo.toml",c.toString().replace(/^mushi = [{] version = "([0-9.]+)".+$/, (_,v) => `mushi = "${v}"`))'
       - name: Setup node
         uses: actions/setup-node@v4
+        working-directory: nodejs
         with:
           node-version: 20
           cache: npm
       - name: Install dependencies
+        working-directory: nodejs
         run: npm install
       - name: Download all artifacts
         uses: actions/download-artifact@v4
+        working-directory: nodejs
         with:
           path: artifacts
       - name: Move artifacts
+        working-directory: nodejs
         run: npm run artifacts
       - name: List packages
+        working-directory: nodejs
         run: ls -R ./npm
       - name: Show package.json
+        working-directory: nodejs
         run: cat package.json
       - name: Publish
         if: startsWith(github.ref, 'refs/tags/nodejs-')
+        working-directory: nodejs
         run: |
           npm config set provenance true
           npm publish --access public
