@@ -14,6 +14,7 @@ export interface EndpointStats {
   /** Cumulative number of QUIC handshakes ignored on this Endpoint. */
   ignoredHandshakes: number
 }
+/** A key pair that identifies and authenticates an `Endpoint`. */
 export declare class EndpointKey {
   /**
    * Load a private key from a PEM-encoded PKCS#8 private key string.
@@ -89,7 +90,8 @@ export declare class Endpoint {
    * `localAddr()` to discover the randomly-assigned port.
    *
    * If `bind_to` resolves to multiple socket addresses, the first that succeeds creation of the
-   * socket will be used.
+   * socket will be used. `getaddrinfo()` or equivalent is used; to control DNS resolution, do
+   * that yourself and pass an IP address and port.
    *
    * `allower` is the trust policy for remote peers: incoming (client certificate) and outgoing
    * (server certificate) peers will have their public key extracted and checked by the
@@ -273,7 +275,7 @@ export declare class RecvStream {
  */
 export declare class SendStream {
   /** Write the entire buffer to the stream. */
-  readBuf(buf: Buffer): Promise<void>
+  write(buf: Buffer): Promise<void>
 }
 /**
  * Return value of `accept_bi()` and `open_bi()`.

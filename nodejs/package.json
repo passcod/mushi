@@ -39,6 +39,7 @@
   },
   "scripts": {
     "artifacts": "napi artifacts",
+    "prebuild": "ln -snf ../target",
     "build": "napi build --platform --release --js-package-name @passcod/mushi",
     "build:debug": "napi build --platform",
     "docs": "typedoc index.d.ts",

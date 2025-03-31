@@ -4,7 +4,7 @@ name = "mushi-nodejs"
 version = "0.0.0"
 
 [lib]
-name = "mushi"
+name = "mushi_nodejs"
 crate-type = ["cdylib"]
 
 [dependencies]
