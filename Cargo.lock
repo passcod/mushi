@@ -608,30 +608,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "mushi"
-version = "0.0.12"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e30dd99ad895cf7de39177c7985dcd8782f99662179747bc9947845ff3be956c"
-dependencies = [
- "base65536",
- "bytes",
- "idna",
- "passcod-web-transport-quinn",
- "rcgen",
- "ring",
- "thiserror 2.0.12",
- "time",
- "tokio",
- "tracing",
- "url",
-]
-
-[[package]]
 name = "mushi-nodejs"
 version = "0.0.0"
 dependencies = [
  "bytes",
- "mushi 0.0.12 (registry+https://github.com/rust-lang/crates.io-index)",
+ "mushi",
  "napi",
  "napi-build",
  "napi-derive",
@@ -642,7 +623,7 @@ dependencies = [
 name = "mushi-python"
 version = "0.0.0"
 dependencies = [
- "mushi 0.0.12",
+ "mushi",
  "pyo3",
  "pyo3-async-runtimes",
  "thiserror 2.0.12",
