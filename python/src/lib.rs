@@ -251,18 +251,16 @@ pub mod export {
                     unk => return Err(BError::UnknownCongestionControl(unk.into())),
                 };
 
-            // Initialize the Tokio runtime if it hasn't been yet
-            pyo3_async_runtimes::tokio::get_runtime();
-
-            // Initialise the crypto provider if it hasn't been yet
             *SETUP;
 
-            Ok(Self(mushi::Endpoint::new(
-                bind_to,
-                key.0.clone(),
-                allower.0.clone(),
-                Some(cc),
-            )?))
+            pyo3_async_runtimes::tokio::get_runtime().block_on(async {
+                Ok(Self(mushi::Endpoint::new(
+                    bind_to,
+                    key.0.clone(),
+                    allower.0.clone(),
+                    Some(cc),
+                )?))
+            })
         }
 
         /// The local address the underlying socket is bound to.
