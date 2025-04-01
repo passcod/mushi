@@ -25,18 +25,20 @@ test("connection", async (t) => {
     t.is(
       s1.peerKey().toString("base64"),
       k2.publicKeyPem
-        .split("\n")
+        .split(/\s+/)
         .filter((line) => !line.includes("---"))
-        .join(""),
+        .join("")
+        .replace(/\s+/g, ""),
     );
 
     const s2 = await s2p;
     t.is(
       s2.peerKey().toString("base64"),
       k1.publicKeyPem
-        .split("\n")
+        .split(/\s+/)
         .filter((line) => !line.includes("---"))
-        .join(""),
+        .join("")
+        .replace(/\s+/g, ""),
     );
   } finally {
     e1.close(0, "done");
