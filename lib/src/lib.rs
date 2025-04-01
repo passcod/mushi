@@ -604,9 +604,31 @@ impl Endpoint {
     /// the idle timeout period.
     ///
     /// Does not proactively close existing sessions or cause incoming sessions to be
-    /// rejected. Consider calling [`Session::close()`] if that is desired.
+    /// rejected. Consider calling [`Endpoint::close()`] if that is desired.
     pub async fn wait_idle(&self) {
         self.endpoint.wait_idle().await
+    }
+
+    /// Close all sessions immediately.
+    ///
+    /// Pending operations will fail immediately with `Connection(ConnectionError::LocallyClosed)`.
+    /// No more data is sent to the peers beyond a `CONNECTION_CLOSE` frame, and the peers may drop
+    /// buffered data upon receiving the `CONNECTION_CLOSE` frame.
+    ///
+    /// `code` and `reason` are not interpreted, and are provided directly to the peers.
+    ///
+    /// `reason` will be truncated to fit in a single packet with overhead; to improve odds that it
+    /// is preserved in full, it should be kept under 1KiB.
+    ///
+    /// See the notes on [`Session::close()`] for more information.
+    pub fn close(&self, code: u32, reason: impl AsRef<[u8]>) {
+        self.endpoint.close(
+            // UNWRAP: VarInt is u64 internally, so the conversion is always valid
+            web_transport_proto::error_to_http3(code)
+                .try_into()
+                .unwrap(),
+            reason.as_ref(),
+        );
     }
 }
 
@@ -751,9 +773,9 @@ impl Session {
     /// local side sends a `CONNECTION_CLOSE` frame, the remote endpoint may drop any data it
     /// received but is as yet undelivered to the application, including data that was acknowledged
     /// as received to the local endpoint.
-    pub fn close(&self, code: u32, reason: &str) {
+    pub fn close(&self, code: u32, reason: impl AsRef<[u8]>) {
         let inner = self.inner.clone();
-        inner.close(code, reason.as_bytes())
+        inner.close(code, reason.as_ref())
     }
 
     /// Wait until the connection is closed.

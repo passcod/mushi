@@ -119,9 +119,24 @@ export declare class Endpoint {
    * out the idle timeout period.
    *
    * Does not proactively close existing sessions or cause incoming sessions to be rejected.
-   * Consider calling `session.close()` if that is desired.
+   * Consider calling `endpoint.close()` if that is desired.
    */
   waitIdle(): Promise<void>
+  /**
+   * Close all sessions immediately.
+   *
+   * Pending operations will fail immediately with `Connection(ConnectionError::LocallyClosed)`.
+   * No more data is sent to the peers beyond a `CONNECTION_CLOSE` frame, and the peers may drop
+   * buffered data upon receiving the `CONNECTION_CLOSE` frame.
+   *
+   * `code` and `reason` are not interpreted, and are provided directly to the peers.
+   *
+   * `reason` will be truncated to fit in a single packet with overhead; to improve odds that it
+   * is preserved in full, it should be kept under 1KiB.
+   *
+   * See the notes on `session.close()` for more information.
+   */
+  close(code: number, reason: string): void
   /** Connect to a peer. */
   connect(addrs: string): Promise<Session>
   /**

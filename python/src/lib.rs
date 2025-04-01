@@ -307,6 +307,22 @@ pub mod export {
             Ok(())
         }
 
+        /// Close all sessions immediately.
+        ///
+        /// Pending operations will fail immediately with `Connection(ConnectionError::LocallyClosed)`.
+        /// No more data is sent to the peers beyond a `CONNECTION_CLOSE` frame, and the peers may drop
+        /// buffered data upon receiving the `CONNECTION_CLOSE` frame.
+        ///
+        /// `code` and `reason` are not interpreted, and are provided directly to the peers.
+        ///
+        /// `reason` will be truncated to fit in a single packet with overhead; to improve odds that it
+        /// is preserved in full, it should be kept under 1KiB.
+        ///
+        /// See the notes on `session.close()` for more information.
+        pub fn close(&self, code: u32, reason: String) {
+            self.0.close(code, &reason)
+        }
+
         /// Connect to a peer.
         fn connect<'py>(&self, py: Python<'py>, addrs: String) -> BResult<Bound<'py, PyAny>> {
             let this = self.0.clone();

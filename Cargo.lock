@@ -605,6 +605,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "url",
+ "web-transport-proto",
 ]
 
 [[package]]

@@ -312,10 +312,31 @@ impl Endpoint {
     /// out the idle timeout period.
     ///
     /// Does not proactively close existing sessions or cause incoming sessions to be rejected.
-    /// Consider calling `session.close()` if that is desired.
+    /// Consider calling `endpoint.close()` if that is desired.
     #[napi]
     pub async fn wait_idle(&self) {
         self.0.wait_idle().await
+    }
+
+    /// Close all sessions immediately.
+    ///
+    /// Pending operations will fail immediately with `Connection(ConnectionError::LocallyClosed)`.
+    /// No more data is sent to the peers beyond a `CONNECTION_CLOSE` frame, and the peers may drop
+    /// buffered data upon receiving the `CONNECTION_CLOSE` frame.
+    ///
+    /// `code` and `reason` are not interpreted, and are provided directly to the peers.
+    ///
+    /// `reason` will be truncated to fit in a single packet with overhead; to improve odds that it
+    /// is preserved in full, it should be kept under 1KiB.
+    ///
+    /// See the notes on `session.close()` for more information.
+    #[napi]
+    pub fn close(&self, code: i32, reason: String) -> Result<()> {
+        Ok(self.0.close(
+            code.try_into()
+                .map_err(|err| Error::from_reason(format!("close code must be positive: {err}")))?,
+            &reason,
+        ))
     }
 
     /// Connect to a peer.

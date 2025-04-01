@@ -20,6 +20,7 @@ time = "0.3.41"
 tokio = { version = "1.44.1", features = ["sync"] }
 tracing = "0.1.41"
 url = "2.5.4"
+web-transport-proto = "0.2.4"
 web-transport-quinn = { version = "0.6.1", default-features = false, features = ["ring"], package = "passcod-web-transport-quinn" }
 
 [dev-dependencies]
