@@ -136,11 +136,8 @@ pub struct AllowerImpl {
 
 impl fmt::Debug for AllowerImpl {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let allower = f
-            .debug_struct("ThreadsafeFunction")
-            .finish_non_exhaustive()?;
         f.debug_struct("Allower")
-            .field("allower", &allower)
+            .field("allower", &"ThreadsafeFunction")
             .field("client_auth", &self.client_auth)
             .finish()
     }
@@ -332,11 +329,12 @@ impl Endpoint {
     /// See the notes on `session.close()` for more information.
     #[napi]
     pub fn close(&self, code: i32, reason: String) -> Result<()> {
-        Ok(self.0.close(
+        self.0.close(
             code.try_into()
                 .map_err(|err| Error::from_reason(format!("close code must be positive: {err}")))?,
             &reason,
-        ))
+        );
+        Ok(())
     }
 
     /// Connect to a peer.
@@ -641,7 +639,7 @@ impl SendStream {
         self.0
             .lock()
             .await
-            .write(&*buf)
+            .write(&buf)
             .await
             .map_err(|err| Error::from_reason(format!("send: {err}")))
     }

@@ -137,10 +137,10 @@ pub mod export {
                 let sync = Arc::clone(&sync);
 
                 move |py| {
-                    let value = self.allower.call1(py, (key.as_ref(),)).map_or(false, |r| {
-                        r.downcast_bound::<PyBool>(py)
-                            .map_or(false, |b| b.is_true())
-                    });
+                    let value = self
+                        .allower
+                        .call1(py, (key.as_ref(),))
+                        .is_ok_and(|r| r.downcast_bound::<PyBool>(py).is_ok_and(|b| b.is_true()));
                     let (lock, cvar, ret) = &*sync;
                     let mut done = lock.lock().unwrap();
                     ret.store(value, Ordering::SeqCst);
@@ -585,7 +585,8 @@ pub mod export {
         fn stop(&self, py: Python, code: u32) -> BResult<()> {
             let this = self.0.clone();
             pyo3_async_runtimes::tokio::future_into_py(py, async move {
-                Ok(this.lock().await.stop(code))
+                this.lock().await.stop(code);
+                Ok(())
             })?;
             Ok(())
         }
@@ -630,7 +631,8 @@ pub mod export {
         fn set_priority(&self, py: Python, priority: i32) -> BResult<()> {
             let this = self.0.clone();
             pyo3_async_runtimes::tokio::future_into_py(py, async move {
-                Ok(this.lock().await.set_priority(priority))
+                this.lock().await.set_priority(priority);
+                Ok(())
             })?;
             Ok(())
         }
@@ -639,7 +641,8 @@ pub mod export {
         fn reset(&self, py: Python, code: u32) -> BResult<()> {
             let this = self.0.clone();
             pyo3_async_runtimes::tokio::future_into_py(py, async move {
-                Ok(this.lock().await.reset(code))
+                this.lock().await.reset(code);
+                Ok(())
             })?;
             Ok(())
         }

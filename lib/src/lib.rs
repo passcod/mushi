@@ -208,7 +208,7 @@ impl EndpointKey {
             CertifiedKey::from_der(
                 vec![cert.der().to_owned()],
                 PrivateKeyDer::Pkcs8(self.key.serialize_der().into()),
-                &provider,
+                provider,
             )
             .ok()?,
         ))
@@ -683,8 +683,10 @@ impl Session {
 
     /// Get access to the underlying QUIC Connection.
     ///
-    /// Safety: you must not use any methods that alter the session state, nor any that send
-    /// packets. This may corrupt the WebTransport state layered on top.
+    /// # Safety
+    ///
+    /// You must not use any methods that alter the session state, nor any that send packets.
+    /// This may corrupt the WebTransport state layered on top.
     ///
     /// Accessing statistical and factual information (such as `peer_identity()`,
     /// `remote_address()`, `stats()`, `close_reason()`, etc) is safe.
