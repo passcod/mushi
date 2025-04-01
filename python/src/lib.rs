@@ -251,6 +251,10 @@ pub mod export {
                     unk => return Err(BError::UnknownCongestionControl(unk.into())),
                 };
 
+            // Initialize the Tokio runtime if it hasn't been yet
+            pyo3_async_runtimes::tokio::get_runtime();
+
+            // Initialise the crypto provider if it hasn't been yet
             *SETUP;
 
             Ok(Self(mushi::Endpoint::new(

@@ -465,6 +465,8 @@ impl Endpoint {
     /// `cc` is the congestion control strategy for the QUIC state machine. You can select
     /// different strategies from [`quinn::congestion`] or elsewhere to optimise for throughput or
     /// latency, or you can use `None` to select the default strategy (Cubic, aka RFC 8312).
+    ///
+    /// Requires a Tokio runtime, even though the function is not async.
     pub fn new(
         bind_to: impl ToSocketAddrs,
         key: EndpointKey,
