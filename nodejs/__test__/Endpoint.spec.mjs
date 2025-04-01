@@ -25,7 +25,7 @@ test("connection", async (t) => {
     t.is(
       s1.peerKey().toString("base64"),
       k2.publicKeyPem
-        .split(/\s+/)
+        .split("\n")
         .filter((line) => !line.includes("---"))
         .join("")
         .replace(/\s+/g, ""),
@@ -35,7 +35,7 @@ test("connection", async (t) => {
     t.is(
       s2.peerKey().toString("base64"),
       k1.publicKeyPem
-        .split(/\s+/)
+        .split("\n")
         .filter((line) => !line.includes("---"))
         .join("")
         .replace(/\s+/g, ""),
