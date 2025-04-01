@@ -151,18 +151,33 @@ impl AllowConnection for AllowerImpl {
         &self,
         key: SubjectPublicKeyInfoDer<'_>,
     ) -> std::result::Result<(), CertificateError> {
-        let ret = Arc::new(AtomicBool::new(false));
-        self.allower.call_with_return_value(
+        use std::sync::{Arc, Condvar, Mutex};
+        let sync = Arc::new((Mutex::new(false), Condvar::new(), AtomicBool::new(false)));
+
+        let status = self.allower.call_with_return_value(
             (Buffer::from(&*key),),
             ThreadsafeFunctionCallMode::Blocking,
             {
-                let ret = ret.clone();
+                let sync = Arc::clone(&sync);
                 move |value: bool| {
+                    let (lock, cvar, ret) = &*sync;
+                    let mut done = lock.lock().unwrap();
                     ret.store(value, Ordering::SeqCst);
+                    *done = true;
+                    cvar.notify_one();
                     Ok(())
                 }
             },
         );
+
+        let (lock, cvar, ret) = &*sync;
+        if status == Status::Ok {
+            let mut done = lock.lock().unwrap();
+            while !*done {
+                done = cvar.wait(done).unwrap();
+            }
+        }
+
         if ret.load(Ordering::SeqCst) {
             Ok(())
         } else {

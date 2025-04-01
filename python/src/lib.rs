@@ -130,15 +130,33 @@ pub mod export {
             &self,
             key: SubjectPublicKeyInfoDer<'_>,
         ) -> std::result::Result<(), CertificateError> {
-            let ret = Arc::new(AtomicBool::new(false));
+            use std::sync::{Arc, Condvar, Mutex};
+            let sync = Arc::new((Mutex::new(false), Condvar::new(), AtomicBool::new(false)));
 
-            Python::with_gil(|py| {
-                let value = self.allower.call1(py, (key.as_ref(),)).map_or(false, |r| {
-                    r.downcast_bound::<PyBool>(py)
-                        .map_or(false, |b| b.is_true())
-                });
-                ret.store(value, Ordering::SeqCst);
+            let status: BResult<()> = Python::with_gil({
+                let sync = Arc::clone(&sync);
+
+                move |py| {
+                    let value = self.allower.call1(py, (key.as_ref(),)).map_or(false, |r| {
+                        r.downcast_bound::<PyBool>(py)
+                            .map_or(false, |b| b.is_true())
+                    });
+                    let (lock, cvar, ret) = &*sync;
+                    let mut done = lock.lock().unwrap();
+                    ret.store(value, Ordering::SeqCst);
+                    *done = true;
+                    cvar.notify_one();
+                    Ok(())
+                }
             });
+
+            let (lock, cvar, ret) = &*sync;
+            if status.is_ok() {
+                let mut done = lock.lock().unwrap();
+                while !*done {
+                    done = cvar.wait(done).unwrap();
+                }
+            }
 
             if ret.load(Ordering::SeqCst) {
                 Ok(())
