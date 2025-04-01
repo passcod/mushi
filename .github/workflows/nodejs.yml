@@ -191,24 +191,29 @@ jobs:
           - target: aarch64-unknown-linux-gnu
             image: slim
             platform: arm64
+            os: ubuntu-24.04-arm
           - target: aarch64-unknown-linux-musl
             image: alpine
             platform: arm64
+            os: ubuntu-24.04-arm
           - target: armv7-unknown-linux-gnueabihf
             image: slim
             platform: arm/v7
             qemu: arm
+            os: ubuntu-24.04-arm
           - target: x86_64-unknown-linux-gnu
             image: slim
             platform: amd64
+            os: ubuntu-latest
           - target: x86_64-unknown-linux-musl
             image: alpine
             platform: amd64
+            os: ubuntu-latest
         node:
           - "18"
           - "20"
           - "22"
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.settings.os }}
     steps:
       - uses: actions/checkout@v4
       - name: Download artifacts
@@ -216,11 +221,11 @@ jobs:
         with:
           name: bindings-${{ matrix.settings.target }}
           path: nodejs
-      - if: matrix.settings.platform != 'amd64'
+      - if: matrix.settings.qemu
         uses: docker/setup-qemu-action@v3
         with:
-          platforms: ${{ matrix.settings.gnu || matrix.settings.platform }}
-      - if: matrix.settings.platform != 'amd64'
+          platforms: ${{ matrix.settings.qemu }}
+      - if: matrix.settings.qemu
         run: docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
       - name: Setup and run tests
         uses: addnab/docker-run-action@v3
