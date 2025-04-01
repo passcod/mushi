@@ -6,8 +6,8 @@ test("connection", async (t) => {
   t.plan(4);
   t.timeout(100);
 
-  const k1 = EndpointKey.generate();
-  const k2 = EndpointKey.generate();
+  const k1 = EndpointKey.generateFor("ecdsa256");
+  const k2 = EndpointKey.generateFor("ecdsa256");
 
   const a = new Allower((key) => true);
 
