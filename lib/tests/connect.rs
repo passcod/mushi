@@ -1,6 +1,6 @@
 use std::sync::{Arc, LazyLock};
 
-use mushi::{AllowAllConnections, Endpoint, EndpointKey, Error};
+use mushi::{AllowAllConnections, Endpoint, EndpointKey, Error, Session};
 use tokio::task::{JoinHandle, spawn};
 
 static SETUP: LazyLock<()> = LazyLock::new(|| {
@@ -52,7 +52,7 @@ async fn datagram() {
             let sesh = sesh?;
             let data = sesh.recv_datagram().await.unwrap();
             assert_eq!(data, "Hello");
-            sesh.send_datagram("World".into()).unwrap();
+            sesh.send_datagram("World".into()).await.unwrap();
             sesh.closed().await?;
         }
 
@@ -60,7 +60,7 @@ async fn datagram() {
     });
 
     let sesh = end1.connect(addr).await.unwrap();
-    sesh.send_datagram("Hello".into()).unwrap();
+    sesh.send_datagram("Hello".into()).await.unwrap();
     let data = sesh.recv_datagram().await.unwrap();
     assert_eq!(data, "World");
     sesh.close(0, "end");

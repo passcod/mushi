@@ -6,8 +6,6 @@ members = [
     "python",
 ]
 
-[workspace.dependencies]
-
 [profile.release]
 lto = false
 codegen-units = 16

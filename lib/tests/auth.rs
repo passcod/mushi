@@ -1,7 +1,7 @@
 use std::sync::{Arc, LazyLock, Mutex};
 
 use mushi::{
-    AllowAllConnections, AllowConnection, CertificateError, Endpoint, EndpointKey, Error,
+    AllowAllConnections, AllowConnection, CertificateError, Endpoint, EndpointKey, Error, Session,
     SubjectPublicKeyInfoDer,
 };
 use tokio::task::{JoinHandle, spawn};

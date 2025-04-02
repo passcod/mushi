@@ -12,7 +12,7 @@ pub mod export {
     };
 
     use mushi::{
-        AllowConnection, CertificateError, SigScheme, SubjectPublicKeyInfoDer,
+        AllowConnection, CertificateError, Session as _, SigScheme, SubjectPublicKeyInfoDer,
         quinn::congestion::{BbrConfig, ControllerFactory, CubicConfig, NewRenoConfig},
         rcgen,
     };
@@ -332,7 +332,7 @@ pub mod export {
                 py,
                 async move {
                     let sesh = this.connect(addrs).await.map_err(BError::from)?;
-                    Ok(Session(sesh))
+                    Ok(Session::from(sesh))
                 },
             )?)
         }
@@ -351,7 +351,7 @@ pub mod export {
                         .await
                         .transpose()
                         .map_err(BError::from)?
-                        .map(Session))
+                        .map(Session::from))
                 },
             )?)
         }
@@ -369,24 +369,47 @@ pub mod export {
     /// detail how to gracefully close a session without losing application data.
     #[pyclass]
     #[derive(Debug, Clone)]
-    pub struct Session(mushi::Session);
+    pub struct Session(SessionInner);
+
+    #[derive(Debug, Clone)]
+    enum SessionInner {
+        Accepted(mushi::AcceptedSession),
+        Connected(mushi::ConnectedSession),
+    }
+
+    impl From<mushi::AcceptedSession> for Session {
+        fn from(session: mushi::AcceptedSession) -> Self {
+            Session(SessionInner::Accepted(session))
+        }
+    }
+
+    impl From<mushi::ConnectedSession> for Session {
+        fn from(session: mushi::ConnectedSession) -> Self {
+            Session(SessionInner::Connected(session))
+        }
+    }
 
     #[pymethods]
     impl Session {
         /// The public key of the remote peer.
         ///
-        /// This may be unavailable if `require_client_auth` was set to `false` in the `Allower`.
+        /// This may be unavailable if `require_client_auth` was set to `False` in the `Allower`.
+        #[getter]
         fn peer_key(&self) -> Option<Vec<u8>> {
-            self.0.peer_key().map(|k| k.to_vec())
+            match &self.0 {
+                SessionInner::Accepted(session) => session.peer_key(),
+                SessionInner::Connected(session) => session.peer_key(),
+            }
+            .map(|k| k.to_vec())
         }
 
         /// The maximum size of a datagram that can be sent.
-        fn max_datagram_size<'py>(&self, py: Python<'py>) -> BResult<Bound<'py, PyAny>> {
-            let this = self.0.clone();
-            Ok(pyo3_async_runtimes::tokio::future_into_py(
-                py,
-                async move { Ok(this.max_datagram_size().await) },
-            )?)
+        #[getter]
+        fn max_datagram_size<'py>(&self) -> usize {
+            match &self.0 {
+                SessionInner::Accepted(session) => session.max_datagram_size(),
+                SessionInner::Connected(session) => session.max_datagram_size(),
+            }
         }
 
         /// Wait until the peer creates a new unidirectional stream.
@@ -397,11 +420,12 @@ pub mod export {
             Ok(pyo3_async_runtimes::tokio::future_into_py(
                 py,
                 async move {
-                    Ok(this
-                        .accept_uni()
-                        .await
-                        .map(RecvStream::new)
-                        .map_err(BError::from)?)
+                    Ok(match this {
+                        SessionInner::Accepted(session) => session.accept_uni().await,
+                        SessionInner::Connected(session) => session.accept_uni().await,
+                    }
+                    .map(RecvStream::new)
+                    .map_err(BError::from)?)
                 },
             )?)
         }
@@ -414,14 +438,15 @@ pub mod export {
             Ok(pyo3_async_runtimes::tokio::future_into_py(
                 py,
                 async move {
-                    Ok(this
-                        .accept_bi()
-                        .await
-                        .map(|(s, r)| BidiStream {
-                            send: Some(SendStream::new(s)),
-                            recv: Some(RecvStream::new(r)),
-                        })
-                        .map_err(BError::from)?)
+                    Ok(match this {
+                        SessionInner::Accepted(session) => session.accept_bi().await,
+                        SessionInner::Connected(session) => session.accept_bi().await,
+                    }
+                    .map(|(s, r)| BidiStream {
+                        send: Some(SendStream::new(s)),
+                        recv: Some(RecvStream::new(r)),
+                    })
+                    .map_err(BError::from)?)
                 },
             )?)
         }
@@ -434,14 +459,15 @@ pub mod export {
             Ok(pyo3_async_runtimes::tokio::future_into_py(
                 py,
                 async move {
-                    Ok(this
-                        .open_bi()
-                        .await
-                        .map(|(s, r)| BidiStream {
-                            send: Some(SendStream::new(s)),
-                            recv: Some(RecvStream::new(r)),
-                        })
-                        .map_err(BError::from)?)
+                    Ok(match this {
+                        SessionInner::Accepted(session) => session.open_bi().await,
+                        SessionInner::Connected(session) => session.open_bi().await,
+                    }
+                    .map(|(s, r)| BidiStream {
+                        send: Some(SendStream::new(s)),
+                        recv: Some(RecvStream::new(r)),
+                    })
+                    .map_err(BError::from)?)
                 },
             )?)
         }
@@ -454,11 +480,12 @@ pub mod export {
             Ok(pyo3_async_runtimes::tokio::future_into_py(
                 py,
                 async move {
-                    Ok(this
-                        .open_uni()
-                        .await
-                        .map(SendStream::new)
-                        .map_err(BError::from)?)
+                    Ok(match this {
+                        SessionInner::Accepted(session) => session.open_uni().await,
+                        SessionInner::Connected(session) => session.open_uni().await,
+                    }
+                    .map(SendStream::new)
+                    .map_err(BError::from)?)
                 },
             )?)
         }
@@ -472,21 +499,40 @@ pub mod export {
         /// - Payload is larger than `max_datagram_size()`
         /// - Peer is not receiving datagrams
         /// - Peer has too many outstanding datagrams
-        fn send_datagram(&self, payload: Vec<u8>) -> BResult<()> {
-            Ok(self.0.send_datagram(payload.into())?)
-        }
-
-        /// Receive a datagram over the network.
-        fn recv_datagrams<'py>(&self, py: Python<'py>) -> BResult<Bound<'py, PyAny>> {
+        fn send_datagram<'py>(
+            &self,
+            py: Python<'py>,
+            payload: Vec<u8>,
+        ) -> BResult<Bound<'py, PyAny>> {
             let this = self.0.clone();
             Ok(pyo3_async_runtimes::tokio::future_into_py(
                 py,
                 async move {
-                    Ok(this
-                        .recv_datagram()
-                        .await
-                        .map(|b| b.to_vec())
-                        .map_err(BError::from)?)
+                    Ok(match this {
+                        SessionInner::Accepted(session) => {
+                            session.send_datagram(payload.into()).await
+                        }
+                        SessionInner::Connected(session) => {
+                            session.send_datagram(payload.into()).await
+                        }
+                    }
+                    .map_err(BError::from)?)
+                },
+            )?)
+        }
+
+        /// Receive a datagram over the network.
+        fn recv_datagram<'py>(&self, py: Python<'py>) -> BResult<Bound<'py, PyAny>> {
+            let this = self.0.clone();
+            Ok(pyo3_async_runtimes::tokio::future_into_py(
+                py,
+                async move {
+                    Ok(match this {
+                        SessionInner::Accepted(session) => session.recv_datagram().await,
+                        SessionInner::Connected(session) => session.recv_datagram().await,
+                    }
+                    .map(|b| b.to_vec())
+                    .map_err(BError::from)?)
                 },
             )?)
         }
@@ -518,8 +564,11 @@ pub mod export {
         /// local side sends a `CONNECTION_CLOSE` frame, the remote endpoint may drop any data it
         /// received but is as yet undelivered to the application, including data that was
         /// acknowledged as received to the local endpoint.
-        fn close(&self, code: i32, reason: String) {
-            self.0.close(code as _, &reason)
+        fn close(&self, code: u32, reason: String) {
+            match &self.0 {
+                SessionInner::Accepted(session) => session.close(code, &reason),
+                SessionInner::Connected(session) => session.close(code, &reason),
+            }
         }
 
         /// Wait until the connection is closed.
@@ -531,11 +580,12 @@ pub mod export {
             Ok(pyo3_async_runtimes::tokio::future_into_py(
                 py,
                 async move {
-                    Ok(this
-                        .closed()
-                        .await
-                        .map(|r| r.map(|reason| reason.to_string()))
-                        .map_err(BError::from)?)
+                    Ok(match this {
+                        SessionInner::Accepted(session) => session.closed().await,
+                        SessionInner::Connected(session) => session.closed().await,
+                    }
+                    .map(|r| r.map(|reason| reason.to_string()))
+                    .map_err(BError::from)?)
                 },
             )?)
         }

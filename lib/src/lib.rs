@@ -13,7 +13,7 @@
 //!
 //! All communications are secured with TLS 1.3, with RSA suites explicitly disabled. Endpoints
 //! have a key pair (which may be generated on startup), and each connection uses a unique
-//! just-in-time short-lived certificate (valid for 2 minutes).
+//! just-in-time short-lived certificate (valid for 2 minute — TODO: validity not checked now).
 //!
 //! This provides authentication: peers are guaranteed to have control over their own key pair, and
 //! it's unfeasible for an attacker in possession of a public key to obtain the associate private
@@ -25,17 +25,22 @@
 //! schemes layered on top of connections. This latter layer is not provided nor facilitated by
 //! Mushi (except to the extent that an established session can retrieve its remote peer's public
 //! key using [`Session::peer_key()`]): it is the responsibility of application implementers to
-//! decide whether authorisation beyond peer public key trust is required, and how.
+//! decide whether authorisation beyond peer public key trust is required, and how to do it.
+//!
+//! Mushi does not at present implement ECH (Encrypted Client Hello). This may be added in the
+//! future; it would require providing the public key of the remote peer upfront.
 //!
 //! # Example
 //!
 //! ```ignore
+//! use mushi::{AllowAllConnections, Endpoint, EndpointKey, Session};
+//!
 //! #[tokio::main]
 //! async fn main() {
 //!     mushi::install_crypto_provider();
 //!
-//!     let key = mushi::EndpointKey::generate().unwrap();
-//!     let policy = Arc::new(mushi::AllowAllConnections);
+//!     let key = EndpointKey::generate().unwrap();
+//!     let policy = Arc::new(AllowAllConnections);
 //!     let end = Endpoint::new("[::]:0", key, policy, None).unwrap();
 //!
 //!     let mut session = end.connect("remotepeer.example.com:1310").await.unwrap();
@@ -81,7 +86,7 @@ use rustls::{
     sign::CertifiedKey,
 };
 use time::{Duration, OffsetDateTime};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 use tracing::trace;
 use web_transport::{ALPN, SessionError};
 
@@ -288,6 +293,8 @@ pub trait AllowConnection: std::fmt::Debug + Send + Sync + 'static {
     /// periods are a polite fiction to make the TLS look normal. It might be useful for hardening
     /// to enable this; this will also require that the system clocks within the distributed
     /// system are synchronised to within the validity period (±1 minute by default).
+    ///
+    /// TODO: this is not yet implemented, returning `true` will panic.
     fn check_validity_period(&self) -> bool {
         false
     }
@@ -556,38 +563,43 @@ impl Endpoint {
     }
 
     /// Connect to a peer.
-    pub async fn connect(&self, addrs: impl ToSocketAddrs) -> Result<Session, Error> {
-        let mut last_err = None;
-        for mut addr in addrs.to_socket_addrs()? {
-            if addr.ip().is_unspecified() {
-                addr.set_ip(match addr.ip() {
-                    IpAddr::V4(_) => Ipv4Addr::LOCALHOST.into(),
-                    IpAddr::V6(_) => Ipv6Addr::LOCALHOST.into(),
-                });
-            }
-            let url = Url::parse(&format!("https://{addr}")).unwrap();
-            let conn =
-                self.endpoint
-                    .connect_with(self.client_config.clone(), addr, "mushi.mushi")?;
-            let conn = conn.await?;
+    ///
+    /// If `addrs` contains unspecified addresses (e.g. `[::]` or `0.0.0.0`), they will be
+    /// converted to localhost. This is a convenience for testing; in production you should prefer
+    /// providing the correct addresses.
+    pub async fn connect(&self, addrs: impl ToSocketAddrs) -> Result<ConnectedSession, Error> {
+        let addrs: Vec<SocketAddr> = addrs
+            .to_socket_addrs()?
+            .map(|mut addr| {
+                if addr.ip().is_unspecified() {
+                    addr.set_ip(match addr.ip() {
+                        IpAddr::V4(_) => Ipv4Addr::LOCALHOST.into(),
+                        IpAddr::V6(_) => Ipv6Addr::LOCALHOST.into(),
+                    });
+                }
 
-            match web_transport::Session::connect(conn, &url).await {
-                Ok(s) => return Ok(Session::new(s)),
-                Err(e) => last_err = Some(Error::from(e)),
-            }
+                addr
+            })
+            .collect();
+
+        if addrs.is_empty() {
+            return Err(Error::NoAddrs);
         }
 
-        Err(last_err.unwrap_or(Error::NoAddrs))
+        ConnectedSession::new(self.clone(), addrs).await
     }
 
     /// Accept an incoming session.
-    pub async fn accept(&self) -> Option<Result<Session, Error>> {
+    pub async fn accept(&self) -> Option<Result<AcceptedSession, Error>> {
         match self.server.lock().await.accept().await {
             Some(session) => Some(
                 session
                     .ok()
                     .await
-                    .map(Session::new)
+                    .map(|session| AcceptedSession {
+                        peer_key: obtain_peer_key(&session),
+                        session,
+                    })
                     .map_err(|e| Error::Write(e.into())),
             ),
             None => None,
@@ -634,6 +646,10 @@ impl Endpoint {
     }
 }
 
+trait SessionInner {
+    fn as_inner(&self) -> web_transport::Session;
+}
+
 /// A Session, able to accept/create streams and send/recv datagrams.
 ///
 /// Can be cloned to create multiple handles to the same underlying connection.
@@ -647,39 +663,13 @@ impl Endpoint {
 /// efforts to deliver data to the peer. Upon receiving `CONNECTION_CLOSE` the peer may drop any
 /// stream data not yet delivered to the application. [`Session::close()`] describes in more detail
 /// how to gracefully close a session without losing application data.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Session {
-    inner: web_transport::Session,
-    peer_key: Option<SubjectPublicKeyInfoDer<'static>>,
-}
-
-impl Session {
-    fn new(session: web_transport::Session) -> Self {
-        let peer_key = session.peer_identity().and_then(|id| {
-            let certs: Vec<CertificateDer> = *id.downcast().ok()?;
-            for cert in certs {
-                let Ok(cert) = ParsedCertificate::try_from(&cert) else {
-                    continue;
-                };
-                return Some(cert.subject_public_key_info());
-            }
-
-            None
-        });
-
-        Self {
-            inner: session,
-            peer_key,
-        }
-    }
-
+#[allow(async_fn_in_trait, private_bounds)]
+pub trait Session: SessionInner + std::fmt::Debug + Clone + Send + Sync + 'static {
     /// The public key of the remote peer.
     ///
     /// This may be unavailable if `require_client_auth` returned `false` in the Endpoint's
     /// [`AllowConnection`] instance.
-    pub fn peer_key(&self) -> Option<&SubjectPublicKeyInfoDer<'_>> {
-        self.peer_key.as_ref()
-    }
+    fn peer_key(&self) -> Option<&SubjectPublicKeyInfoDer<'_>>;
 
     /// Get access to the underlying QUIC Connection.
     ///
@@ -690,30 +680,34 @@ impl Session {
     ///
     /// Accessing statistical and factual information (such as `peer_identity()`,
     /// `remote_address()`, `stats()`, `close_reason()`, etc) is safe.
-    pub unsafe fn as_quic(&self) -> &quinn::Connection {
-        &self.inner
+    unsafe fn quic(&self) -> quinn::Connection {
+        (&*self.as_inner()).clone()
     }
 
     /// Wait until the peer creates a new unidirectional stream.
     ///
     /// Will error if the connection is closed.
-    pub async fn accept_uni(&self) -> Result<RecvStream, Error> {
-        let inner = self.inner.clone();
+    async fn accept_uni(&self) -> Result<RecvStream, Error> {
+        let inner = self.as_inner().clone();
         let stream = inner.accept_uni().await?;
         Ok(RecvStream::new(stream))
     }
 
     /// Wait until the peer creates a new bidirectional stream.
-    pub async fn accept_bi(&self) -> Result<(SendStream, RecvStream), Error> {
-        let (s, r) = self.inner.accept_bi().await?;
+    ///
+    /// Will error if the connection is closed.
+    async fn accept_bi(&self) -> Result<(SendStream, RecvStream), Error> {
+        let (s, r) = self.as_inner().clone().accept_bi().await?;
         Ok((SendStream::new(s), RecvStream::new(r)))
     }
 
     /// Open a new bidirectional stream.
     ///
     /// May wait when there are too many concurrent streams.
-    pub async fn open_bi(&self) -> Result<(SendStream, RecvStream), Error> {
-        let inner = self.inner.clone();
+    ///
+    /// Will error if the connection is closed.
+    async fn open_bi(&self) -> Result<(SendStream, RecvStream), Error> {
+        let inner = self.as_inner().clone();
         Ok(inner
             .open_bi()
             .await
@@ -723,8 +717,10 @@ impl Session {
     /// Open a new unidirectional stream.
     ///
     /// May wait when there are too many concurrent streams.
-    pub async fn open_uni(&self) -> Result<SendStream, Error> {
-        let inner = self.inner.clone();
+    ///
+    /// Will error if the connection is closed.
+    async fn open_uni(&self) -> Result<SendStream, Error> {
+        let inner = self.as_inner().clone();
         Ok(inner.open_uni().await.map(SendStream::new)?)
     }
 
@@ -736,19 +732,23 @@ impl Session {
     /// - Payload is larger than `max_datagram_size()`
     /// - Peer is not receiving datagrams
     /// - Peer has too many outstanding datagrams
-    pub fn send_datagram(&self, payload: Bytes) -> Result<(), Error> {
-        let inner = self.inner.clone();
+    ///
+    /// Will error if the connection is closed.
+    async fn send_datagram(&self, payload: Bytes) -> Result<(), Error> {
+        let inner = self.as_inner().clone();
         Ok(inner.send_datagram(payload)?)
     }
 
     /// The maximum size of a datagram that can be sent.
-    pub async fn max_datagram_size(&self) -> usize {
-        self.inner.max_datagram_size()
+    fn max_datagram_size(&self) -> usize {
+        self.as_inner().max_datagram_size()
     }
 
     /// Receive a datagram over the network.
-    pub async fn recv_datagram(&self) -> Result<Bytes, Error> {
-        let inner = self.inner.clone();
+    ///
+    /// Will error if the connection is closed.
+    async fn recv_datagram(&self) -> Result<Bytes, Error> {
+        let inner = self.as_inner().clone();
         Ok(inner.read_datagram().await?)
     }
 
@@ -777,8 +777,8 @@ impl Session {
     /// local side sends a `CONNECTION_CLOSE` frame, the remote endpoint may drop any data it
     /// received but is as yet undelivered to the application, including data that was acknowledged
     /// as received to the local endpoint.
-    pub fn close(&self, code: u32, reason: impl AsRef<[u8]>) {
-        let inner = self.inner.clone();
+    fn close(&self, code: u32, reason: impl AsRef<[u8]>) {
+        let inner = self.as_inner().clone();
         inner.close(code, reason.as_ref())
     }
 
@@ -786,13 +786,187 @@ impl Session {
     ///
     /// Returns `Ok(None)` if the connection was closed locally, `Ok(Some(_))` if the connection
     /// was closed by a peer (e.g. with `close()`), and `Err(_)` for other unexpected reasons.
-    pub async fn closed(&self) -> Result<Option<ApplicationClose>, Error> {
-        match self.inner.closed().await {
+    async fn closed(&self) -> Result<Option<ApplicationClose>, Error> {
+        match self.as_inner().clone().closed().await {
             SessionError::ConnectionError(ConnectionError::LocallyClosed) => Ok(None),
             SessionError::ConnectionError(ConnectionError::ApplicationClosed(ac)) => Ok(Some(ac)),
             e => Err(Error::Session(e)),
         }
     }
+}
+
+/// A session created by `connect()`.
+///
+/// Connected sessions are able to reconnect automatically should they disconnect from being idle
+/// too long or from network conditions.
+///
+/// See [`Session`] for common methods.
+#[derive(Debug, Clone)]
+pub struct ConnectedSession {
+    addrs: Vec<SocketAddr>,
+    endpoint: Endpoint,
+    peer_key: Option<SubjectPublicKeyInfoDer<'static>>,
+    inner: Arc<RwLock<AcceptedSession>>,
+}
+
+impl ConnectedSession {
+    async fn connect_impl(
+        endpoint: &Endpoint,
+        addrs: &[SocketAddr],
+    ) -> Result<web_transport::Session, Error> {
+        let mut last_err = None;
+        for addr in addrs {
+            let url = Url::parse(&format!("https://{addr}")).unwrap();
+            let conn = endpoint.endpoint.connect_with(
+                endpoint.client_config.clone(),
+                *addr,
+                "mushi.mushi",
+            )?;
+            let conn = conn.await?;
+
+            match web_transport::Session::connect(conn, &url).await {
+                Ok(s) => return Ok(s),
+                Err(e) => last_err = Some(Error::from(e)),
+            }
+        }
+
+        Err(last_err.unwrap_or(Error::NoAddrs))
+    }
+
+    async fn new(endpoint: Endpoint, addrs: Vec<SocketAddr>) -> Result<Self, Error> {
+        let session = Self::connect_impl(&endpoint, &addrs).await?;
+        Ok(Self {
+            addrs,
+            endpoint,
+            peer_key: obtain_peer_key(&session),
+            inner: Arc::new(RwLock::new(AcceptedSession {
+                session,
+                peer_key: None,
+            })),
+        })
+    }
+}
+
+impl Session for ConnectedSession {
+    fn peer_key(&self) -> Option<&SubjectPublicKeyInfoDer<'_>> {
+        self.peer_key.as_ref()
+    }
+
+    async fn accept_uni(&self) -> Result<RecvStream, Error> {
+        match self.inner.read().await.accept_uni().await {
+            Err(Error::Connection(ConnectionError::TimedOut)) => {
+                let new_session = Self::connect_impl(&self.endpoint, &self.addrs).await?;
+                let mut inner = self.inner.write().await;
+                inner.session = new_session;
+                inner.accept_uni().await
+            }
+            other => other,
+        }
+    }
+
+    async fn accept_bi(&self) -> Result<(SendStream, RecvStream), Error> {
+        match self.inner.read().await.accept_bi().await {
+            Err(Error::Connection(ConnectionError::TimedOut)) => {
+                let new_session = Self::connect_impl(&self.endpoint, &self.addrs).await?;
+                let mut inner = self.inner.write().await;
+                inner.session = new_session;
+                inner.accept_bi().await
+            }
+            other => other,
+        }
+    }
+
+    async fn open_uni(&self) -> Result<SendStream, Error> {
+        match self.inner.read().await.open_uni().await {
+            Err(Error::Connection(ConnectionError::TimedOut)) => {
+                let new_session = Self::connect_impl(&self.endpoint, &self.addrs).await?;
+                let mut inner = self.inner.write().await;
+                inner.session = new_session;
+                inner.open_uni().await
+            }
+            other => other,
+        }
+    }
+
+    async fn open_bi(&self) -> Result<(SendStream, RecvStream), Error> {
+        match self.inner.read().await.open_bi().await {
+            Err(Error::Connection(ConnectionError::TimedOut)) => {
+                let new_session = Self::connect_impl(&self.endpoint, &self.addrs).await?;
+                let mut inner = self.inner.write().await;
+                inner.session = new_session;
+                inner.open_bi().await
+            }
+            other => other,
+        }
+    }
+
+    async fn send_datagram(&self, payload: Bytes) -> Result<(), Error> {
+        match self.inner.read().await.send_datagram(payload.clone()).await {
+            Err(Error::Connection(ConnectionError::TimedOut)) => {
+                let new_session = Self::connect_impl(&self.endpoint, &self.addrs).await?;
+                let mut inner = self.inner.write().await;
+                inner.session = new_session;
+                inner.send_datagram(payload).await
+            }
+            other => other,
+        }
+    }
+
+    async fn recv_datagram(&self) -> Result<Bytes, Error> {
+        match self.inner.read().await.recv_datagram().await {
+            Err(Error::Connection(ConnectionError::TimedOut)) => {
+                let new_session = Self::connect_impl(&self.endpoint, &self.addrs).await?;
+                let mut inner = self.inner.write().await;
+                inner.session = new_session;
+                inner.recv_datagram().await
+            }
+            other => other,
+        }
+    }
+}
+
+impl SessionInner for ConnectedSession {
+    fn as_inner(&self) -> web_transport::Session {
+        self.inner.try_read().unwrap().as_inner().clone()
+    }
+}
+
+/// A session created by `accept()`.
+///
+/// Accepted sessions are subject to getting disconnected from timeouts or network conditions
+/// without direct recourse (besides waiting for the peer to reconnect).
+///
+/// See [`Session`] for common methods.
+#[derive(Debug, Clone)]
+pub struct AcceptedSession {
+    session: web_transport::Session,
+    peer_key: Option<SubjectPublicKeyInfoDer<'static>>,
+}
+
+impl Session for AcceptedSession {
+    fn peer_key(&self) -> Option<&SubjectPublicKeyInfoDer<'_>> {
+        self.peer_key.as_ref()
+    }
+}
+
+impl SessionInner for AcceptedSession {
+    fn as_inner(&self) -> web_transport::Session {
+        self.session.clone()
+    }
+}
+
+fn obtain_peer_key(conn: &quinn::Connection) -> Option<SubjectPublicKeyInfoDer<'static>> {
+    conn.peer_identity().and_then(|id| {
+        let certs: Vec<CertificateDer> = *id.downcast().ok()?;
+        for cert in certs {
+            let Ok(cert) = ParsedCertificate::try_from(&cert) else {
+                continue;
+            };
+            return Some(cert.subject_public_key_info());
+        }
+
+        None
+    })
 }
 
 /// An outgoing stream of bytes to the peer.

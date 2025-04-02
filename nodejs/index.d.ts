@@ -186,7 +186,7 @@ export declare class Session {
    */
   peerKey(): Buffer | null
   /** The maximum size of a datagram that can be sent. */
-  maxDatagramSize(): Promise<number>
+  maxDatagramSize(): number
   /**
    * Wait until the peer creates a new unidirectional stream.
    *
@@ -218,7 +218,7 @@ export declare class Session {
    * - Peer is not receiving datagrams
    * - Peer has too many outstanding datagrams
    */
-  sendDatagram(payload: Buffer): void
+  sendDatagram(payload: Buffer): Promise<void>
   /** Receive a datagram over the network. */
   recvDatagram(): Promise<Buffer>
   /**

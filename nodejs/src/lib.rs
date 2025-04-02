@@ -8,7 +8,7 @@ use std::{
 };
 
 use mushi::{
-    AllowConnection, CertificateError, SigScheme, SubjectPublicKeyInfoDer,
+    AllowConnection, CertificateError, Session as _, SigScheme, SubjectPublicKeyInfoDer,
     quinn::congestion::{BbrConfig, ControllerFactory, CubicConfig, NewRenoConfig},
     rcgen,
 };
@@ -344,7 +344,7 @@ impl Endpoint {
             .connect(addrs)
             .await
             .map_err(|err| Error::from_reason(format!("endpoint: {err}")))
-            .map(Session)
+            .map(Session::from)
     }
 
     /// Accept an incoming session.
@@ -377,7 +377,7 @@ impl Endpoint {
             .await
             .transpose()
             .map_err(|err| Error::from_reason(format!("endpoint: {err}")))
-            .map(|os| os.map(Session))
+            .map(|os| os.map(Session::from))
     }
 }
 
@@ -420,7 +420,25 @@ impl From<mushi::quinn::EndpointStats> for EndpointStats {
 /// how to gracefully close a session without losing application data.
 #[napi]
 #[derive(Debug, Clone)]
-pub struct Session(mushi::Session);
+pub struct Session(SessionInner);
+
+#[derive(Debug, Clone)]
+enum SessionInner {
+    Accepted(mushi::AcceptedSession),
+    Connected(mushi::ConnectedSession),
+}
+
+impl From<mushi::AcceptedSession> for Session {
+    fn from(session: mushi::AcceptedSession) -> Self {
+        Session(SessionInner::Accepted(session))
+    }
+}
+
+impl From<mushi::ConnectedSession> for Session {
+    fn from(session: mushi::ConnectedSession) -> Self {
+        Session(SessionInner::Connected(session))
+    }
+}
 
 #[napi]
 impl Session {
@@ -429,13 +447,22 @@ impl Session {
     /// This may be unavailable if `requireClientAuth` was set to `false` in the `Allower`.
     #[napi]
     pub fn peer_key(&self) -> Option<Buffer> {
-        self.0.peer_key().map(|k| (**k).into())
+        match &self.0 {
+            SessionInner::Accepted(session) => session.peer_key(),
+            SessionInner::Connected(session) => session.peer_key(),
+        }
+        .map(|k| (**k).into())
     }
 
     /// The maximum size of a datagram that can be sent.
     #[napi]
-    pub async fn max_datagram_size(&self) -> i64 {
-        self.0.max_datagram_size().await as _
+    pub fn max_datagram_size(&self) -> i64 {
+        match &self.0 {
+            SessionInner::Accepted(session) => session.max_datagram_size(),
+            SessionInner::Connected(session) => session.max_datagram_size(),
+        }
+        .try_into()
+        .unwrap_or(i64::MAX)
     }
 
     /// Wait until the peer creates a new unidirectional stream.
@@ -443,24 +470,26 @@ impl Session {
     /// Will error if the session has been closed.
     #[napi]
     pub async fn accept_uni(&self) -> Result<RecvStream> {
-        self.0
-            .accept_uni()
-            .await
-            .map(RecvStream::new)
-            .map_err(|err| Error::from_reason(format!("session: {err}")))
+        match &self.0 {
+            SessionInner::Accepted(session) => session.accept_uni().await,
+            SessionInner::Connected(session) => session.accept_uni().await,
+        }
+        .map(RecvStream::new)
+        .map_err(|err| Error::from_reason(format!("session: {err}")))
     }
 
     /// Wait until the peer creates a new bidirectional stream.
     #[napi]
     pub async fn accept_bi(&self) -> Result<BidiStream> {
-        self.0
-            .accept_bi()
-            .await
-            .map(|(s, r)| BidiStream {
-                send: Some(SendStream::new(s)),
-                recv: Some(RecvStream::new(r)),
-            })
-            .map_err(|err| Error::from_reason(format!("session: {err}")))
+        match &self.0 {
+            SessionInner::Accepted(session) => session.accept_bi().await,
+            SessionInner::Connected(session) => session.accept_bi().await,
+        }
+        .map(|(s, r)| BidiStream {
+            send: Some(SendStream::new(s)),
+            recv: Some(RecvStream::new(r)),
+        })
+        .map_err(|err| Error::from_reason(format!("session: {err}")))
     }
 
     /// Open a new bidirectional stream.
@@ -468,14 +497,15 @@ impl Session {
     /// May wait when there are too many concurrent streams.
     #[napi]
     pub async fn open_bi(&self) -> Result<BidiStream> {
-        self.0
-            .open_bi()
-            .await
-            .map(|(s, r)| BidiStream {
-                send: Some(SendStream::new(s)),
-                recv: Some(RecvStream::new(r)),
-            })
-            .map_err(|err| Error::from_reason(format!("session: {err}")))
+        match &self.0 {
+            SessionInner::Accepted(session) => session.open_bi().await,
+            SessionInner::Connected(session) => session.open_bi().await,
+        }
+        .map(|(s, r)| BidiStream {
+            send: Some(SendStream::new(s)),
+            recv: Some(RecvStream::new(r)),
+        })
+        .map_err(|err| Error::from_reason(format!("session: {err}")))
     }
 
     /// Open a new unidirectional stream.
@@ -483,11 +513,12 @@ impl Session {
     /// May wait when there are too many concurrent streams.
     #[napi]
     pub async fn open_uni(&self) -> Result<SendStream> {
-        self.0
-            .open_uni()
-            .await
-            .map(SendStream::new)
-            .map_err(|err| Error::from_reason(format!("session: {err}")))
+        match &self.0 {
+            SessionInner::Accepted(session) => session.open_uni().await,
+            SessionInner::Connected(session) => session.open_uni().await,
+        }
+        .map(SendStream::new)
+        .map_err(|err| Error::from_reason(format!("session: {err}")))
     }
 
     /// Send an unreliable datagram over the network.
@@ -500,20 +531,24 @@ impl Session {
     /// - Peer is not receiving datagrams
     /// - Peer has too many outstanding datagrams
     #[napi]
-    pub fn send_datagram(&self, payload: Buffer) -> Result<()> {
-        self.0
-            .send_datagram(bytes::Bytes::from_owner(payload))
-            .map_err(|err| Error::from_reason(format!("session: {err}")))
+    pub async fn send_datagram(&self, payload: Buffer) -> Result<()> {
+        let bytes = bytes::Bytes::from_owner(payload);
+        match &self.0 {
+            SessionInner::Accepted(session) => session.send_datagram(bytes).await,
+            SessionInner::Connected(session) => session.send_datagram(bytes).await,
+        }
+        .map_err(|err| Error::from_reason(format!("session: {err}")))
     }
 
     /// Receive a datagram over the network.
     #[napi]
     pub async fn recv_datagram(&self) -> Result<Buffer> {
-        self.0
-            .recv_datagram()
-            .await
-            .map(|b| Buffer::from(&*b))
-            .map_err(|err| Error::from_reason(format!("session: {err}")))
+        match &self.0 {
+            SessionInner::Accepted(session) => session.recv_datagram().await,
+            SessionInner::Connected(session) => session.recv_datagram().await,
+        }
+        .map(|b| Buffer::from(&*b))
+        .map_err(|err| Error::from_reason(format!("session: {err}")))
     }
 
     /// Close the session immediately.
@@ -543,7 +578,10 @@ impl Session {
     /// as received to the local endpoint.
     #[napi]
     pub fn close(&self, code: i32, reason: String) {
-        self.0.close(code as _, &reason)
+        match &self.0 {
+            SessionInner::Accepted(session) => session.close(code as _, &reason),
+            SessionInner::Connected(session) => session.close(code as _, &reason),
+        }
     }
 
     /// Wait until the connection is closed.
@@ -552,11 +590,12 @@ impl Session {
     /// was closed by a peer (e.g. with `close()`). Throws for other unexpected close reasons.
     #[napi]
     pub async fn closed(&self) -> Result<Option<String>> {
-        self.0
-            .closed()
-            .await
-            .map(|r| r.map(|reason| reason.to_string()))
-            .map_err(|err| Error::from_reason(format!("session: {err}")))
+        match &self.0 {
+            SessionInner::Accepted(session) => session.closed().await,
+            SessionInner::Connected(session) => session.closed().await,
+        }
+        .map(|r| r.map(|reason| reason.to_string()))
+        .map_err(|err| Error::from_reason(format!("session: {err}")))
     }
 }
 

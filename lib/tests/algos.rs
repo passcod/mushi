@@ -1,6 +1,6 @@
 use std::sync::{Arc, LazyLock};
 
-use mushi::{AllowAllConnections, Endpoint, EndpointKey, Error};
+use mushi::{AllowAllConnections, Endpoint, EndpointKey, Error, Session};
 use tokio::task::{JoinHandle, spawn};
 
 static SETUP: LazyLock<()> = LazyLock::new(|| {
