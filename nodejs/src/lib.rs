@@ -531,11 +531,11 @@ impl Session {
     /// - Peer is not receiving datagrams
     /// - Peer has too many outstanding datagrams
     #[napi]
-    pub async fn send_datagram(&self, payload: Buffer) -> Result<()> {
+    pub fn send_datagram(&self, payload: Buffer) -> Result<()> {
         let bytes = bytes::Bytes::from_owner(payload);
         match &self.0 {
-            SessionInner::Accepted(session) => session.send_datagram(bytes).await,
-            SessionInner::Connected(session) => session.send_datagram(bytes).await,
+            SessionInner::Accepted(session) => session.send_datagram(bytes),
+            SessionInner::Connected(session) => session.send_datagram(bytes),
         }
         .map_err(|err| Error::from_reason(format!("session: {err}")))
     }

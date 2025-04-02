@@ -56,7 +56,7 @@
 
 use std::{
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs},
-    sync::Arc,
+    sync::{Arc, RwLock},
 };
 
 pub use rcgen;
@@ -86,7 +86,7 @@ use rustls::{
     sign::CertifiedKey,
 };
 use time::{Duration, OffsetDateTime};
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::Mutex;
 use tracing::trace;
 use web_transport::{ALPN, SessionError};
 
@@ -568,25 +568,7 @@ impl Endpoint {
     /// converted to localhost. This is a convenience for testing; in production you should prefer
     /// providing the correct addresses.
     pub async fn connect(&self, addrs: impl ToSocketAddrs) -> Result<ConnectedSession, Error> {
-        let addrs: Vec<SocketAddr> = addrs
-            .to_socket_addrs()?
-            .map(|mut addr| {
-                if addr.ip().is_unspecified() {
-                    addr.set_ip(match addr.ip() {
-                        IpAddr::V4(_) => Ipv4Addr::LOCALHOST.into(),
-                        IpAddr::V6(_) => Ipv6Addr::LOCALHOST.into(),
-                    });
-                }
-
-                addr
-            })
-            .collect();
-
-        if addrs.is_empty() {
-            return Err(Error::NoAddrs);
-        }
-
-        ConnectedSession::new(self.clone(), addrs).await
+        ConnectedSession::new(self.clone(), normalise_addrs(addrs)?).await
     }
 
     /// Accept an incoming session.
@@ -644,6 +626,28 @@ impl Endpoint {
             reason.as_ref(),
         );
     }
+}
+
+fn normalise_addrs(addrs: impl ToSocketAddrs) -> Result<Vec<SocketAddr>, Error> {
+    let addrs: Vec<SocketAddr> = addrs
+        .to_socket_addrs()?
+        .map(|mut addr| {
+            if addr.ip().is_unspecified() {
+                addr.set_ip(match addr.ip() {
+                    IpAddr::V4(_) => Ipv4Addr::LOCALHOST.into(),
+                    IpAddr::V6(_) => Ipv6Addr::LOCALHOST.into(),
+                });
+            }
+
+            addr
+        })
+        .collect();
+
+    if addrs.is_empty() {
+        return Err(Error::NoAddrs);
+    }
+
+    Ok(addrs)
 }
 
 trait SessionInner {
@@ -734,7 +738,7 @@ pub trait Session: SessionInner + std::fmt::Debug + Clone + Send + Sync + 'stati
     /// - Peer has too many outstanding datagrams
     ///
     /// Will error if the connection is closed.
-    async fn send_datagram(&self, payload: Bytes) -> Result<(), Error> {
+    fn send_datagram(&self, payload: Bytes) -> Result<(), Error> {
         let inner = self.as_inner().clone();
         Ok(inner.send_datagram(payload)?)
     }
@@ -845,89 +849,53 @@ impl ConnectedSession {
             })),
         })
     }
+
+    /// Reconnect the session (e.g. after it timed out).
+    ///
+    /// This re-uses the addresses provided in the initial `connect()` call. Note that DNS is not
+    /// resolved again; if that's desired use [`reconnect_to()`][ConnectedSession::reconnect_to].
+    ///
+    /// The key of the peer must match the one previously obtained.
+    pub async fn reconnect(&self) -> Result<(), Error> {
+        let mut inner = self.inner.write().unwrap();
+        let session = Self::connect_impl(&self.endpoint, &self.addrs).await?;
+        let new_peer_key = obtain_peer_key(&session);
+        if new_peer_key != self.peer_key {
+            return Err(Error::PeerKeyMismatch);
+        }
+        inner.session = session;
+        Ok(())
+    }
+
+    /// Reconnect the session to new addresses.
+    ///
+    /// This can be used if the address of the peer has changed, or to resolve DNS again.
+    /// The new addresses are not set on `self` if reconnection fails.
+    ///
+    /// The key of the peer must match the one previously obtained.
+    pub async fn reconnect_to(&mut self, addrs: impl ToSocketAddrs) -> Result<(), Error> {
+        let mut inner = self.inner.write().unwrap();
+        let addrs = normalise_addrs(addrs)?;
+        let session = Self::connect_impl(&self.endpoint, &addrs).await?;
+        let new_peer_key = obtain_peer_key(&session);
+        if new_peer_key != self.peer_key {
+            return Err(Error::PeerKeyMismatch);
+        }
+        self.addrs = addrs;
+        inner.session = session;
+        Ok(())
+    }
 }
 
 impl Session for ConnectedSession {
     fn peer_key(&self) -> Option<&SubjectPublicKeyInfoDer<'_>> {
         self.peer_key.as_ref()
     }
-
-    async fn accept_uni(&self) -> Result<RecvStream, Error> {
-        match self.inner.read().await.accept_uni().await {
-            Err(Error::Connection(ConnectionError::TimedOut)) => {
-                let new_session = Self::connect_impl(&self.endpoint, &self.addrs).await?;
-                let mut inner = self.inner.write().await;
-                inner.session = new_session;
-                inner.accept_uni().await
-            }
-            other => other,
-        }
-    }
-
-    async fn accept_bi(&self) -> Result<(SendStream, RecvStream), Error> {
-        match self.inner.read().await.accept_bi().await {
-            Err(Error::Connection(ConnectionError::TimedOut)) => {
-                let new_session = Self::connect_impl(&self.endpoint, &self.addrs).await?;
-                let mut inner = self.inner.write().await;
-                inner.session = new_session;
-                inner.accept_bi().await
-            }
-            other => other,
-        }
-    }
-
-    async fn open_uni(&self) -> Result<SendStream, Error> {
-        match self.inner.read().await.open_uni().await {
-            Err(Error::Connection(ConnectionError::TimedOut)) => {
-                let new_session = Self::connect_impl(&self.endpoint, &self.addrs).await?;
-                let mut inner = self.inner.write().await;
-                inner.session = new_session;
-                inner.open_uni().await
-            }
-            other => other,
-        }
-    }
-
-    async fn open_bi(&self) -> Result<(SendStream, RecvStream), Error> {
-        match self.inner.read().await.open_bi().await {
-            Err(Error::Connection(ConnectionError::TimedOut)) => {
-                let new_session = Self::connect_impl(&self.endpoint, &self.addrs).await?;
-                let mut inner = self.inner.write().await;
-                inner.session = new_session;
-                inner.open_bi().await
-            }
-            other => other,
-        }
-    }
-
-    async fn send_datagram(&self, payload: Bytes) -> Result<(), Error> {
-        match self.inner.read().await.send_datagram(payload.clone()).await {
-            Err(Error::Connection(ConnectionError::TimedOut)) => {
-                let new_session = Self::connect_impl(&self.endpoint, &self.addrs).await?;
-                let mut inner = self.inner.write().await;
-                inner.session = new_session;
-                inner.send_datagram(payload).await
-            }
-            other => other,
-        }
-    }
-
-    async fn recv_datagram(&self) -> Result<Bytes, Error> {
-        match self.inner.read().await.recv_datagram().await {
-            Err(Error::Connection(ConnectionError::TimedOut)) => {
-                let new_session = Self::connect_impl(&self.endpoint, &self.addrs).await?;
-                let mut inner = self.inner.write().await;
-                inner.session = new_session;
-                inner.recv_datagram().await
-            }
-            other => other,
-        }
-    }
 }
 
 impl SessionInner for ConnectedSession {
     fn as_inner(&self) -> web_transport::Session {
-        self.inner.try_read().unwrap().as_inner().clone()
+        self.inner.read().unwrap().as_inner().clone()
     }
 }
 
@@ -1095,6 +1063,9 @@ pub enum Error {
 
     #[error("no addresses found")]
     NoAddrs,
+
+    #[error("peer key mismatch on reconnection")]
+    PeerKeyMismatch,
 }
 
 impl From<web_transport::WriteError> for Error {

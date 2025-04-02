@@ -499,26 +499,11 @@ pub mod export {
         /// - Payload is larger than `max_datagram_size()`
         /// - Peer is not receiving datagrams
         /// - Peer has too many outstanding datagrams
-        fn send_datagram<'py>(
-            &self,
-            py: Python<'py>,
-            payload: Vec<u8>,
-        ) -> BResult<Bound<'py, PyAny>> {
-            let this = self.0.clone();
-            Ok(pyo3_async_runtimes::tokio::future_into_py(
-                py,
-                async move {
-                    Ok(match this {
-                        SessionInner::Accepted(session) => {
-                            session.send_datagram(payload.into()).await
-                        }
-                        SessionInner::Connected(session) => {
-                            session.send_datagram(payload.into()).await
-                        }
-                    }
-                    .map_err(BError::from)?)
-                },
-            )?)
+        fn send_datagram(&self, payload: Vec<u8>) -> BResult<()> {
+            Ok(match self.0.clone() {
+                SessionInner::Accepted(session) => session.send_datagram(payload.into()),
+                SessionInner::Connected(session) => session.send_datagram(payload.into()),
+            }?)
         }
 
         /// Receive a datagram over the network.
