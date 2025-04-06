@@ -23,7 +23,7 @@ test("connection", async (t) => {
 
     const s1 = await s1p;
     t.is(
-      s1.peerKey().toString("base64"),
+      (await s1.peerKey()).toString("base64"),
       k2.publicKeyPem
         .split("\n")
         .filter((line) => !line.includes("---"))
@@ -33,7 +33,7 @@ test("connection", async (t) => {
 
     const s2 = await s2p;
     t.is(
-      s2.peerKey().toString("base64"),
+      (await s2.peerKey()).toString("base64"),
       k1.publicKeyPem
         .split("\n")
         .filter((line) => !line.includes("---"))

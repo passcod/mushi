@@ -420,23 +420,25 @@ impl From<mushi::quinn::EndpointStats> for EndpointStats {
 /// how to gracefully close a session without losing application data.
 #[napi]
 #[derive(Debug, Clone)]
-pub struct Session(SessionInner);
+pub struct Session(Arc<Mutex<SessionInner>>);
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 enum SessionInner {
     Accepted(mushi::AcceptedSession),
     Connected(mushi::ConnectedSession),
+    #[default]
+    Transition,
 }
 
 impl From<mushi::AcceptedSession> for Session {
     fn from(session: mushi::AcceptedSession) -> Self {
-        Session(SessionInner::Accepted(session))
+        Session(Arc::new(Mutex::new(SessionInner::Accepted(session))))
     }
 }
 
 impl From<mushi::ConnectedSession> for Session {
     fn from(session: mushi::ConnectedSession) -> Self {
-        Session(SessionInner::Connected(session))
+        Session(Arc::new(Mutex::new(SessionInner::Connected(session))))
     }
 }
 
@@ -446,23 +448,86 @@ impl Session {
     ///
     /// This may be unavailable if `requireClientAuth` was set to `false` in the `Allower`.
     #[napi]
-    pub fn peer_key(&self) -> Option<Buffer> {
-        match &self.0 {
+    pub async fn peer_key(&self) -> Option<Buffer> {
+        match &(&*self.0.lock().await).clone() {
             SessionInner::Accepted(session) => session.peer_key(),
             SessionInner::Connected(session) => session.peer_key(),
+            SessionInner::Transition => unreachable!("Session is in transition"),
         }
         .map(|k| (**k).into())
     }
 
     /// The maximum size of a datagram that can be sent.
     #[napi]
-    pub fn max_datagram_size(&self) -> i64 {
-        match &self.0 {
+    pub async fn max_datagram_size(&self) -> i64 {
+        match &(&*self.0.lock().await).clone() {
             SessionInner::Accepted(session) => session.max_datagram_size(),
             SessionInner::Connected(session) => session.max_datagram_size(),
+            SessionInner::Transition => unreachable!("Session is in transition"),
         }
         .try_into()
         .unwrap_or(i64::MAX)
+    }
+
+    /// Reconnect the session (e.g. after it timed out).
+    ///
+    /// This re-uses the addresses provided in the initial `connect()` call. Note that DNS is not
+    /// resolved again; if that's desired use `reconnect_to()`.
+    ///
+    /// The key of the peer must match the one previously obtained.
+    ///
+    /// This will always throw if the session was established with `accept()`.
+    #[napi]
+    pub async fn reconnect(&self) -> Result<()> {
+        let mut inner = self.0.lock().await;
+        if matches!(&*inner, SessionInner::Accepted(_)) {
+            return Err(Error::from_reason("reconnection not available"));
+        };
+
+        let existing = std::mem::take(&mut *inner);
+        let SessionInner::Connected(session) = existing else {
+            unreachable!("Session is in transition");
+        };
+
+        match session.clone().reconnect().await {
+            Ok(new_session) => {
+                *inner = SessionInner::Connected(new_session);
+                Ok(())
+            }
+            Err(err) => {
+                *inner = SessionInner::Connected(session);
+                Err(Error::from_reason(format!("session: {err}")))
+            }
+        }
+    }
+
+    /// Reconnect the session (e.g. after it timed out) to a different address.
+    ///
+    /// The key of the peer must match the one previously obtained.
+    ///
+    /// This will always throw if the session was established with `accept()`.
+    #[napi]
+    pub async fn reconnect_to(&self, addr: String) -> Result<()> {
+        let mut inner = self.0.lock().await;
+        if matches!(&*inner, SessionInner::Accepted(_)) {
+            return Err(Error::from_reason("reconnection not available"));
+        };
+
+        let existing = std::mem::take(&mut *inner);
+        let SessionInner::Connected(session) = existing else {
+            unreachable!("Session is in transition");
+        };
+
+        match session.clone().reconnect_to(addr).await {
+            Ok(new_session) => {
+                *inner = SessionInner::Connected(new_session);
+                Ok(())
+            }
+            Err(err) => {
+                *inner = SessionInner::Connected(session);
+                Err(Error::from_reason(format!("session: {err}")))
+            }
+        }
     }
 
     /// Wait until the peer creates a new unidirectional stream.
@@ -470,9 +535,10 @@ impl Session {
     /// Will error if the session has been closed.
     #[napi]
     pub async fn accept_uni(&self) -> Result<RecvStream> {
-        match &self.0 {
+        match &(&*self.0.lock().await).clone() {
             SessionInner::Accepted(session) => session.accept_uni().await,
             SessionInner::Connected(session) => session.accept_uni().await,
+            SessionInner::Transition => unreachable!("Session is in transition"),
         }
         .map(RecvStream::new)
         .map_err(|err| Error::from_reason(format!("session: {err}")))
@@ -481,9 +547,10 @@ impl Session {
     /// Wait until the peer creates a new bidirectional stream.
     #[napi]
     pub async fn accept_bi(&self) -> Result<BidiStream> {
-        match &self.0 {
+        match &(&*self.0.lock().await).clone() {
             SessionInner::Accepted(session) => session.accept_bi().await,
             SessionInner::Connected(session) => session.accept_bi().await,
+            SessionInner::Transition => unreachable!("Session is in transition"),
         }
         .map(|(s, r)| BidiStream {
             send: Some(SendStream::new(s)),
@@ -497,9 +564,10 @@ impl Session {
     /// May wait when there are too many concurrent streams.
     #[napi]
     pub async fn open_bi(&self) -> Result<BidiStream> {
-        match &self.0 {
+        match &(&*self.0.lock().await).clone() {
             SessionInner::Accepted(session) => session.open_bi().await,
             SessionInner::Connected(session) => session.open_bi().await,
+            SessionInner::Transition => unreachable!("Session is in transition"),
         }
         .map(|(s, r)| BidiStream {
             send: Some(SendStream::new(s)),
@@ -513,9 +581,10 @@ impl Session {
     /// May wait when there are too many concurrent streams.
     #[napi]
     pub async fn open_uni(&self) -> Result<SendStream> {
-        match &self.0 {
+        match &(&*self.0.lock().await).clone() {
             SessionInner::Accepted(session) => session.open_uni().await,
             SessionInner::Connected(session) => session.open_uni().await,
+            SessionInner::Transition => unreachable!("Session is in transition"),
         }
         .map(SendStream::new)
         .map_err(|err| Error::from_reason(format!("session: {err}")))
@@ -531,11 +600,12 @@ impl Session {
     /// - Peer is not receiving datagrams
     /// - Peer has too many outstanding datagrams
     #[napi]
-    pub fn send_datagram(&self, payload: Buffer) -> Result<()> {
+    pub async fn send_datagram(&self, payload: Buffer) -> Result<()> {
         let bytes = bytes::Bytes::from_owner(payload);
-        match &self.0 {
+        match &(&*self.0.lock().await).clone() {
             SessionInner::Accepted(session) => session.send_datagram(bytes),
             SessionInner::Connected(session) => session.send_datagram(bytes),
+            SessionInner::Transition => unreachable!("Session is in transition"),
         }
         .map_err(|err| Error::from_reason(format!("session: {err}")))
     }
@@ -543,9 +613,10 @@ impl Session {
     /// Receive a datagram over the network.
     #[napi]
     pub async fn recv_datagram(&self) -> Result<Buffer> {
-        match &self.0 {
+        match &(&*self.0.lock().await).clone() {
             SessionInner::Accepted(session) => session.recv_datagram().await,
             SessionInner::Connected(session) => session.recv_datagram().await,
+            SessionInner::Transition => unreachable!("Session is in transition"),
         }
         .map(|b| Buffer::from(&*b))
         .map_err(|err| Error::from_reason(format!("session: {err}")))
@@ -577,10 +648,11 @@ impl Session {
     /// received but is as yet undelivered to the application, including data that was acknowledged
     /// as received to the local endpoint.
     #[napi]
-    pub fn close(&self, code: i32, reason: String) {
-        match &self.0 {
+    pub async fn close(&self, code: i32, reason: String) {
+        match &(&*self.0.lock().await).clone() {
             SessionInner::Accepted(session) => session.close(code as _, &reason),
             SessionInner::Connected(session) => session.close(code as _, &reason),
+            SessionInner::Transition => unreachable!("Session is in transition"),
         }
     }
 
@@ -590,9 +662,10 @@ impl Session {
     /// was closed by a peer (e.g. with `close()`). Throws for other unexpected close reasons.
     #[napi]
     pub async fn closed(&self) -> Result<Option<String>> {
-        match &self.0 {
+        match &(&*self.0.lock().await).clone() {
             SessionInner::Accepted(session) => session.closed().await,
             SessionInner::Connected(session) => session.closed().await,
+            SessionInner::Transition => unreachable!("Session is in transition"),
         }
         .map(|r| r.map(|reason| reason.to_string()))
         .map_err(|err| Error::from_reason(format!("session: {err}")))

@@ -1,6 +1,6 @@
 use std::sync::{Arc, LazyLock};
 
-use mushi::{AllowAllConnections, Endpoint, EndpointKey, Error, Session};
+use mushi::{AllowAllConnections, Endpoint, Error, Key, Session};
 use tokio::task::{JoinHandle, spawn};
 
 static SETUP: LazyLock<()> = LazyLock::new(|| {
@@ -14,11 +14,23 @@ static SETUP: LazyLock<()> = LazyLock::new(|| {
 async fn connection() {
     *SETUP;
 
-    let key1 = EndpointKey::generate().unwrap();
-    let key2 = EndpointKey::generate().unwrap();
+    let key1 = Key::generate().unwrap();
+    let key2 = Key::generate().unwrap();
 
-    let end1 = Endpoint::new("[::1]:0", key1, Arc::new(AllowAllConnections), None).unwrap();
-    let end2 = Endpoint::new("[::1]:0", key2, Arc::new(AllowAllConnections), None).unwrap();
+    let end1 = Endpoint::new(
+        "[::1]:0",
+        key1,
+        Arc::new(AllowAllConnections),
+        Default::default(),
+    )
+    .unwrap();
+    let end2 = Endpoint::new(
+        "[::1]:0",
+        key2,
+        Arc::new(AllowAllConnections),
+        Default::default(),
+    )
+    .unwrap();
 
     let addr = end2.local_addr().unwrap();
 
@@ -39,11 +51,23 @@ async fn connection() {
 async fn datagram() {
     *SETUP;
 
-    let key1 = EndpointKey::generate().unwrap();
-    let key2 = EndpointKey::generate().unwrap();
+    let key1 = Key::generate().unwrap();
+    let key2 = Key::generate().unwrap();
 
-    let end1 = Endpoint::new("[::1]:0", key1, Arc::new(AllowAllConnections), None).unwrap();
-    let end2 = Endpoint::new("[::1]:0", key2, Arc::new(AllowAllConnections), None).unwrap();
+    let end1 = Endpoint::new(
+        "[::1]:0",
+        key1,
+        Arc::new(AllowAllConnections),
+        Default::default(),
+    )
+    .unwrap();
+    let end2 = Endpoint::new(
+        "[::1]:0",
+        key2,
+        Arc::new(AllowAllConnections),
+        Default::default(),
+    )
+    .unwrap();
 
     let addr = end2.local_addr().unwrap();
 
@@ -71,11 +95,23 @@ async fn datagram() {
 async fn unidi() {
     *SETUP;
 
-    let key1 = EndpointKey::generate().unwrap();
-    let key2 = EndpointKey::generate().unwrap();
+    let key1 = Key::generate().unwrap();
+    let key2 = Key::generate().unwrap();
 
-    let end1 = Endpoint::new("[::1]:0", key1, Arc::new(AllowAllConnections), None).unwrap();
-    let end2 = Endpoint::new("[::1]:0", key2, Arc::new(AllowAllConnections), None).unwrap();
+    let end1 = Endpoint::new(
+        "[::1]:0",
+        key1,
+        Arc::new(AllowAllConnections),
+        Default::default(),
+    )
+    .unwrap();
+    let end2 = Endpoint::new(
+        "[::1]:0",
+        key2,
+        Arc::new(AllowAllConnections),
+        Default::default(),
+    )
+    .unwrap();
 
     let addr = end2.local_addr().unwrap();
 
@@ -127,11 +163,23 @@ async fn unidi() {
 async fn bidi() {
     *SETUP;
 
-    let key1 = EndpointKey::generate().unwrap();
-    let key2 = EndpointKey::generate().unwrap();
+    let key1 = Key::generate().unwrap();
+    let key2 = Key::generate().unwrap();
 
-    let end1 = Endpoint::new("[::1]:0", key1, Arc::new(AllowAllConnections), None).unwrap();
-    let end2 = Endpoint::new("[::1]:0", key2, Arc::new(AllowAllConnections), None).unwrap();
+    let end1 = Endpoint::new(
+        "[::1]:0",
+        key1,
+        Arc::new(AllowAllConnections),
+        Default::default(),
+    )
+    .unwrap();
+    let end2 = Endpoint::new(
+        "[::1]:0",
+        key2,
+        Arc::new(AllowAllConnections),
+        Default::default(),
+    )
+    .unwrap();
 
     let addr = end2.local_addr().unwrap();
 

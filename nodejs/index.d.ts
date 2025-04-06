@@ -184,9 +184,28 @@ export declare class Session {
    *
    * This may be unavailable if `requireClientAuth` was set to `false` in the `Allower`.
    */
-  peerKey(): Buffer | null
+  peerKey(): Promise<Buffer | null>
   /** The maximum size of a datagram that can be sent. */
-  maxDatagramSize(): number
+  maxDatagramSize(): Promise<number>
+  /**
+   * Reconnect the session (e.g. after it timed out).
+   *
+   * This re-uses the addresses provided in the initial `connect()` call. Note that DNS is not
+   * resolved again; if that's desired use `reconnect_to()`.
+   *
+   * The key of the peer must match the one previously obtained.
+   *
+   * This will always throw if the session was established with `accept()`.
+   */
+  reconnect(): Promise<void>
+  /**
+   * Reconnect the session (e.g. after it timed out) to a different address.
+   *
+   * The key of the peer must match the one previously obtained.
+   *
+   * This will always throw if the session was established with `accept()`.
+   */
+  reconnectTo(addr: string): Promise<void>
   /**
    * Wait until the peer creates a new unidirectional stream.
    *
@@ -248,7 +267,7 @@ export declare class Session {
    * received but is as yet undelivered to the application, including data that was acknowledged
    * as received to the local endpoint.
    */
-  close(code: number, reason: string): void
+  close(code: number, reason: string): Promise<void>
   /**
    * Wait until the connection is closed.
    *

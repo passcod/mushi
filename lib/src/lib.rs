@@ -55,10 +55,12 @@
 #![warn(missing_docs)]
 
 use std::{
+    fmt,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs},
-    sync::{Arc, RwLock},
+    sync::Arc,
 };
 
+pub use crate::{key::*, provider::install_crypto_provider};
 pub use rcgen;
 pub use rustls::{CertificateError, pki_types::SubjectPublicKeyInfoDer};
 pub use url::Url;
@@ -70,202 +72,66 @@ use quinn::{
     congestion::ControllerFactory,
     crypto::rustls::{QuicClientConfig, QuicServerConfig},
 };
-use rcgen::{CertificateParams, DistinguishedName as Dn, DnType, KeyPair};
+use rcgen::KeyPair;
 use rustls::{
     DigitallySignedStruct, DistinguishedName, KeyLogFile, SignatureScheme,
-    client::{
-        ResolvesClientCert,
-        danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier},
-    },
-    crypto::{CryptoProvider, WebPkiSupportedAlgorithms, verify_tls13_signature},
-    pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime, alg_id},
+    client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier},
+    crypto::{CryptoProvider, verify_tls13_signature},
+    pki_types::{CertificateDer, ServerName, UnixTime},
     server::{
-        ClientHello, ParsedCertificate, ResolvesServerCert,
+        ParsedCertificate,
         danger::{ClientCertVerified, ClientCertVerifier},
     },
-    sign::CertifiedKey,
 };
-use time::{Duration, OffsetDateTime};
 use tokio::sync::Mutex;
-use tracing::trace;
 use web_transport::{ALPN, SessionError};
 
-/// Install a default [`CryptoProvider`] specialised for Mushi applications.
-///
-/// This uses _ring_ and specifically disallows all uses of RSA. If you require RSA for other TLS
-/// or _ring_ applications, either use the `with_provider` variants of builders for these, or use
-/// [`rustls::crypto::ring::default_provider()`] directly instead.
-pub fn install_crypto_provider() {
-    let mut provider = rustls::crypto::ring::default_provider();
-    let algos = Box::leak(
-        provider
-            .signature_verification_algorithms
-            .all
-            .iter()
-            .cloned()
-            .filter(|a| a.public_key_alg_id() != alg_id::RSA_ENCRYPTION)
-            .collect::<Vec<_>>()
-            .into_boxed_slice(),
-    );
-    let mappings = Box::leak(
-        provider
-            .signature_verification_algorithms
-            .mapping
-            .iter()
-            .cloned()
-            .filter(|(sig, _)| sig.as_str().is_some_and(|s| !s.contains("RSA")))
-            .collect::<Vec<_>>()
-            .into_boxed_slice(),
-    );
-    provider.signature_verification_algorithms = WebPkiSupportedAlgorithms {
-        all: algos,
-        mapping: mappings,
-    };
-    trace!(?provider, "mushi crypto provider");
-    provider.install_default().unwrap();
-}
+mod key;
+mod provider;
 
-/// A key pair that identifies and authenticates an [`Endpoint`].
-#[derive(Debug, Clone)]
-pub struct EndpointKey {
-    scheme: SigScheme,
-    key: Arc<KeyPair>,
-
-    /// How long certificates should be valid for. Defaults to 2 minutes.
-    pub validity: Duration,
-}
-
-impl std::ops::Deref for EndpointKey {
-    type Target = KeyPair;
-    fn deref(&self) -> &Self::Target {
-        &self.key
-    }
-}
-
-/// A signature scheme for generating and using an [`EndpointKey`].
-///
-/// Different endpoints can have different sigschemes and interoperate.
-///
-/// A SigScheme is the tuple of the [rustls] type (for TLS) and the corresponding [rcgen] type (for
-/// generating certificates). The `SIGSCHEME_*` constants provide for common schemes but it is
-/// possible to make your own should the libraries support more.
-pub type SigScheme = (SignatureScheme, &'static rcgen::SignatureAlgorithm);
-
-/// Small keys using the [Ed25519](https://ed25519.cr.yp.to/) scheme.
-pub const SIGSCHEME_ED25519: SigScheme = (SignatureScheme::ED25519, &rcgen::PKCS_ED25519);
-
-/// Keys using the [ECDSA] scheme and the NIST P-256 curve.
-///
-/// [ECDSA]: https://en.wikipedia.org/wiki/Elliptic_Curve_Digital_Signature_Algorithm
-pub const SIGSCHEME_ECDSA256: SigScheme = (
-    SignatureScheme::ECDSA_NISTP256_SHA256,
-    &rcgen::PKCS_ECDSA_P256_SHA256,
-);
-
-/// Keys using the [ECDSA] scheme and the NIST P-384 curve.
-///
-/// [ECDSA]: https://en.wikipedia.org/wiki/Elliptic_Curve_Digital_Signature_Algorithm
-pub const SIGSCHEME_ECDSA384: SigScheme = (
-    SignatureScheme::ECDSA_NISTP384_SHA384,
-    &rcgen::PKCS_ECDSA_P384_SHA384,
-);
-
-const MUSHI_TLD: &str = "xn--zqsr9q"; // 慕士
-
-impl EndpointKey {
-    /// Generate a new random key using the default scheme.
-    pub fn generate() -> Result<Self, rcgen::Error> {
-        Self::generate_for(SIGSCHEME_ED25519)
-    }
-
-    /// Generate a new random key using a particular scheme.
-    pub fn generate_for(scheme: SigScheme) -> Result<Self, rcgen::Error> {
-        Ok(Self {
-            scheme,
-            key: Arc::new(KeyPair::generate_for(scheme.1)?),
-            validity: Duration::MINUTE * 2,
-        })
-    }
-
-    /// Load an existing key from a [`rcgen::KeyPair`].
+/// Options for an [Endpoint].
+#[derive(Clone)]
+pub struct EndpointOptions {
+    /// Whether incoming peers need to provide a certificate.
     ///
-    /// Panics if `scheme` doesn't match the keypair.
-    pub fn load(key: KeyPair, scheme: SigScheme) -> Self {
-        if !key.compatible_algs().any(|alg| alg == scheme.1) {
-            panic!("KeyPair is not compatible with {scheme:?}");
-        }
+    /// This is `true` by default, and is the expectation in Mushi applications. In certain
+    /// use-cases, allowing "anonymous" clients may be necessary; take care to implement your own
+    /// authorisation layer as required.
+    pub require_client_auth: bool,
 
+    /// Whether validity periods are checked.
+    ///
+    /// This is `false` by default: keys are just-in-time and all that really matter, and validity
+    /// periods are a polite fiction to make the TLS look normal. It might be useful for hardening
+    /// to enable this; this will also require that the system clocks within the distributed
+    /// system are synchronised to within the validity period (±1 minute by default).
+    ///
+    /// TODO: this is not yet implemented, setting `true` will panic.
+    pub check_validity_period: bool,
+
+    /// The congestion control strategy for the QUIC state machine.
+    ///
+    /// You can select different strategies from [`quinn::congestion`] or elsewhere to optimise for
+    /// throughput or latency. The default strategy is Cubic, aka RFC 8312 (TCP's algorithm).
+    pub congestion_control: Arc<(dyn ControllerFactory + Send + Sync + 'static)>,
+}
+
+impl fmt::Debug for EndpointOptions {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("EndpointOptions")
+            .field("require_client_auth", &self.require_client_auth)
+            .field("check_validity_period", &self.check_validity_period)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Default for EndpointOptions {
+    fn default() -> Self {
         Self {
-            scheme,
-            key: Arc::new(key),
-            validity: Duration::MINUTE * 2,
+            require_client_auth: true,
+            check_validity_period: false,
+            congestion_control: Arc::new(quinn::congestion::CubicConfig::default()),
         }
-    }
-
-    fn supports_sigschemes(&self, requested: &[SignatureScheme]) -> bool {
-        requested.contains(&self.scheme.0)
-    }
-
-    fn get_certificate(&self) -> Option<Arc<CertifiedKey>> {
-        let cert = self.make_certificate().ok()?;
-        let provider = CryptoProvider::get_default().expect("a default CryptoProvider must be set");
-        Some(Arc::new(
-            CertifiedKey::from_der(
-                vec![cert.der().to_owned()],
-                PrivateKeyDer::Pkcs8(self.key.serialize_der().into()),
-                provider,
-            )
-            .ok()?,
-        ))
-    }
-
-    /// Generate a certificate for this key.
-    ///
-    /// This is primarily used internally, but exposed for convenience if you're implementing the
-    /// transport yourself and don't want to bother making certificates correctly.
-    pub fn make_certificate(&self) -> Result<rcgen::Certificate, rcgen::Error> {
-        // some stacks balk if certificates don't have a SAN or DN.
-        // generate a fake SAN based on the fingerprint of the public key
-        // this plus the xn-- prefix = a 62-character DNS label, right under the limit
-        let print = ring::digest::digest(&ring::digest::SHA256, &self.key.public_key_der());
-        let puny = idna::punycode::encode_str(&base65536::encode(&print, None))
-            .unwrap_or(MUSHI_TLD.to_string());
-
-        // append a non-existing TLD so we never conflict with Internet resources
-        let san = format!("xn--{puny}.{MUSHI_TLD}");
-
-        let mut cert = CertificateParams::new(vec![san.clone()])?;
-        cert.distinguished_name = Dn::new();
-        cert.distinguished_name.push(DnType::CommonName, san);
-
-        // issue certificates valid slightly in the past, so that servers that aren't
-        // synchronised in time properly can talk to each other. certificate periods
-        // are checked on handshake only, and Mushi generates certificates just-in-time
-        let start = OffsetDateTime::now_utc() - Duration::MINUTE;
-        cert.not_before = start;
-        cert.not_after = start + Duration::MINUTE + self.validity;
-
-        cert.self_signed(&self.key)
-    }
-}
-
-impl ResolvesClientCert for EndpointKey {
-    fn resolve(&self, _hints: &[&[u8]], schemes: &[SignatureScheme]) -> Option<Arc<CertifiedKey>> {
-        if self.supports_sigschemes(schemes) {
-            self.get_certificate()
-        } else {
-            None
-        }
-    }
-
-    fn has_certs(&self) -> bool {
-        true
-    }
-}
-
-impl ResolvesServerCert for EndpointKey {
-    fn resolve(&self, _hello: ClientHello<'_>) -> Option<Arc<CertifiedKey>> {
-        self.get_certificate()
     }
 }
 
@@ -277,27 +143,6 @@ pub trait AllowConnection: std::fmt::Debug + Send + Sync + 'static {
     /// the peer. You should select an appropriate [`CertificateError`]; if in doubt, use
     /// [`ApplicationVerificationFailure`](CertificateError::ApplicationVerificationFailure).
     fn allow_public_key(&self, key: SubjectPublicKeyInfoDer<'_>) -> Result<(), CertificateError>;
-
-    /// Whether incoming peers need to provide a certificate.
-    ///
-    /// This is `true` by default, and is the expectation in Mushi applications. In certain
-    /// use-cases, allowing "anonymous" clients may be necessary; take care to implement your own
-    /// authorisation layer as required.
-    fn require_client_auth(&self) -> bool {
-        true
-    }
-
-    /// Whether validity periods are checked.
-    ///
-    /// This is `false` by default: keys are just-in-time and all that really matter, and validity
-    /// periods are a polite fiction to make the TLS look normal. It might be useful for hardening
-    /// to enable this; this will also require that the system clocks within the distributed
-    /// system are synchronised to within the validity period (±1 minute by default).
-    ///
-    /// TODO: this is not yet implemented, returning `true` will panic.
-    fn check_validity_period(&self) -> bool {
-        false
-    }
 }
 
 /// A convenience allower which accepts all public keys.
@@ -314,9 +159,11 @@ impl AllowConnection for AllowAllConnections {
     }
 }
 
-/// Internal implementation detail to avoid orphan-impl errors.
 #[derive(Debug, Clone)]
-struct ConnectionAllower(Arc<dyn AllowConnection>);
+struct ConnectionAllower {
+    allower: Arc<dyn AllowConnection>,
+    options: EndpointOptions,
+}
 
 impl ServerCertVerifier for ConnectionAllower {
     fn verify_server_cert(
@@ -329,11 +176,11 @@ impl ServerCertVerifier for ConnectionAllower {
     ) -> Result<ServerCertVerified, rustls::Error> {
         let cert = ParsedCertificate::try_from(end_entity)?;
 
-        if self.0.check_validity_period() {
+        if self.options.check_validity_period {
             todo!("check_validity_period");
         }
 
-        self.0
+        self.allower
             .allow_public_key(cert.subject_public_key_info())
             .map_err(rustls::Error::from)
             .and(Ok(ServerCertVerified::assertion()))
@@ -381,11 +228,11 @@ impl ClientCertVerifier for ConnectionAllower {
     ) -> Result<ClientCertVerified, rustls::Error> {
         let cert = ParsedCertificate::try_from(end_entity)?;
 
-        if self.0.check_validity_period() {
+        if self.options.check_validity_period {
             todo!("check_validity_period");
         }
 
-        self.0
+        self.allower
             .allow_public_key(cert.subject_public_key_info())
             .map_err(rustls::Error::from)
             .and(Ok(ClientCertVerified::assertion()))
@@ -420,7 +267,7 @@ impl ClientCertVerifier for ConnectionAllower {
     }
 
     fn client_auth_mandatory(&self) -> bool {
-        self.0.require_client_auth()
+        self.options.require_client_auth
     }
 }
 
@@ -435,9 +282,10 @@ impl ClientCertVerifier for ConnectionAllower {
 /// installed, preferably using [`install_crypto_provider()`].
 #[derive(Clone)]
 pub struct Endpoint {
+    options: EndpointOptions,
     client_config: quinn::ClientConfig,
     server: Arc<Mutex<web_transport::Server>>,
-    key: Arc<EndpointKey>,
+    key: Arc<Key>,
     endpoint: quinn::Endpoint,
 }
 
@@ -447,6 +295,7 @@ impl std::fmt::Debug for Endpoint {
             .debug_struct("web_transport_quinn::Server")
             .finish_non_exhaustive()?;
         f.debug_struct("Endpoint")
+            .field("options", &self.options)
             .field("client_config", &self.client_config)
             .field("server", &server)
             .field("key", &self.key)
@@ -469,20 +318,19 @@ impl Endpoint {
     /// (server certificate) peers will have their public key extracted and checked by the
     /// [`AllowConnection`] implementation.
     ///
-    /// `cc` is the congestion control strategy for the QUIC state machine. You can select
-    /// different strategies from [`quinn::congestion`] or elsewhere to optimise for throughput or
-    /// latency, or you can use `None` to select the default strategy (Cubic, aka RFC 8312).
-    ///
     /// Requires a Tokio runtime, even though the function is not async.
     pub fn new(
         bind_to: impl ToSocketAddrs,
-        key: EndpointKey,
+        key: Key,
         allower: Arc<dyn AllowConnection>,
-        cc: Option<Arc<(dyn ControllerFactory + Send + Sync + 'static)>>,
+        options: EndpointOptions,
     ) -> Result<Self, Error> {
         let provider = Arc::new(rustls::crypto::ring::default_provider());
         let key = Arc::new(key);
-        let allower = Arc::new(ConnectionAllower(allower));
+        let allower = Arc::new(ConnectionAllower {
+            allower,
+            options: options.clone(),
+        });
 
         let mut server_config = rustls::ServerConfig::builder_with_provider(provider.clone())
             .with_protocol_versions(&[&rustls::version::TLS13])
@@ -505,9 +353,7 @@ impl Endpoint {
         }
 
         let mut transport = quinn::TransportConfig::default();
-        if let Some(cc) = cc {
-            transport.congestion_controller_factory(cc.clone());
-        }
+        transport.congestion_controller_factory(options.congestion_control.clone());
         let transport = Arc::new(transport);
 
         let mut server_config = quinn::ServerConfig::with_crypto(Arc::new(
@@ -540,6 +386,7 @@ impl Endpoint {
         endpoint.set_default_client_config(client_config.clone());
 
         Ok(Self {
+            options,
             key,
             client_config,
             server: Arc::new(Mutex::new(web_transport::Server::new(endpoint.clone()))),
@@ -685,7 +532,7 @@ pub trait Session: SessionInner + std::fmt::Debug + Clone + Send + Sync + 'stati
     /// Accessing statistical and factual information (such as `peer_identity()`,
     /// `remote_address()`, `stats()`, `close_reason()`, etc) is safe.
     unsafe fn quic(&self) -> quinn::Connection {
-        (&*self.as_inner()).clone()
+        (*self.as_inner()).clone()
     }
 
     /// Wait until the peer creates a new unidirectional stream.
@@ -801,16 +648,13 @@ pub trait Session: SessionInner + std::fmt::Debug + Clone + Send + Sync + 'stati
 
 /// A session created by `connect()`.
 ///
-/// Connected sessions are able to reconnect automatically should they disconnect from being idle
-/// too long or from network conditions.
-///
 /// See [`Session`] for common methods.
 #[derive(Debug, Clone)]
 pub struct ConnectedSession {
     addrs: Vec<SocketAddr>,
     endpoint: Endpoint,
     peer_key: Option<SubjectPublicKeyInfoDer<'static>>,
-    inner: Arc<RwLock<AcceptedSession>>,
+    inner: AcceptedSession,
 }
 
 impl ConnectedSession {
@@ -843,10 +687,10 @@ impl ConnectedSession {
             addrs,
             endpoint,
             peer_key: obtain_peer_key(&session),
-            inner: Arc::new(RwLock::new(AcceptedSession {
+            inner: AcceptedSession {
                 session,
                 peer_key: None,
-            })),
+            },
         })
     }
 
@@ -856,34 +700,33 @@ impl ConnectedSession {
     /// resolved again; if that's desired use [`reconnect_to()`][ConnectedSession::reconnect_to].
     ///
     /// The key of the peer must match the one previously obtained.
-    pub async fn reconnect(&self) -> Result<(), Error> {
-        let mut inner = self.inner.write().unwrap();
+    ///
+    /// This does not modify other clones of the session.
+    pub async fn reconnect(self) -> Result<Self, Error> {
         let session = Self::connect_impl(&self.endpoint, &self.addrs).await?;
         let new_peer_key = obtain_peer_key(&session);
         if new_peer_key != self.peer_key {
             return Err(Error::PeerKeyMismatch);
         }
-        inner.session = session;
-        Ok(())
+        Ok(Self {
+            endpoint: self.endpoint,
+            addrs: self.addrs,
+            peer_key: self.peer_key,
+            inner: AcceptedSession {
+                session,
+                peer_key: None,
+            },
+        })
     }
 
     /// Reconnect the session to new addresses.
     ///
     /// This can be used if the address of the peer has changed, or to resolve DNS again.
-    /// The new addresses are not set on `self` if reconnection fails.
     ///
     /// The key of the peer must match the one previously obtained.
-    pub async fn reconnect_to(&mut self, addrs: impl ToSocketAddrs) -> Result<(), Error> {
-        let mut inner = self.inner.write().unwrap();
-        let addrs = normalise_addrs(addrs)?;
-        let session = Self::connect_impl(&self.endpoint, &addrs).await?;
-        let new_peer_key = obtain_peer_key(&session);
-        if new_peer_key != self.peer_key {
-            return Err(Error::PeerKeyMismatch);
-        }
-        self.addrs = addrs;
-        inner.session = session;
-        Ok(())
+    pub async fn reconnect_to(mut self, addrs: impl ToSocketAddrs) -> Result<Self, Error> {
+        self.addrs = normalise_addrs(addrs)?;
+        self.reconnect().await
     }
 }
 
@@ -895,7 +738,7 @@ impl Session for ConnectedSession {
 
 impl SessionInner for ConnectedSession {
     fn as_inner(&self) -> web_transport::Session {
-        self.inner.read().unwrap().as_inner().clone()
+        self.inner.as_inner().clone()
     }
 }
 
