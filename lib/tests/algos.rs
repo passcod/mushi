@@ -1,6 +1,6 @@
-use std::sync::{Arc, LazyLock};
+use std::sync::LazyLock;
 
-use mushi::{AllowAllConnections, Endpoint, Error, Key, Session};
+use mushi::{Endpoint, Error, Key, Session};
 use tokio::task::{JoinHandle, spawn};
 
 static SETUP: LazyLock<()> = LazyLock::new(|| {
@@ -17,20 +17,8 @@ async fn both_ed25519() {
     let key1 = Key::generate().unwrap();
     let key2 = Key::generate().unwrap();
 
-    let end1 = Endpoint::new(
-        "[::1]:0",
-        key1,
-        Arc::new(AllowAllConnections),
-        Default::default(),
-    )
-    .unwrap();
-    let end2 = Endpoint::new(
-        "[::1]:0",
-        key2,
-        Arc::new(AllowAllConnections),
-        Default::default(),
-    )
-    .unwrap();
+    let end1 = Endpoint::new("[::1]:0", key1, Default::default()).unwrap();
+    let end2 = Endpoint::new("[::1]:0", key2, Default::default()).unwrap();
 
     let addr = end2.local_addr().unwrap();
 
@@ -54,20 +42,8 @@ async fn both_ecdsa256() {
     let key1 = Key::generate_for(mushi::SIGSCHEME_ECDSA256).unwrap();
     let key2 = Key::generate_for(mushi::SIGSCHEME_ECDSA256).unwrap();
 
-    let end1 = Endpoint::new(
-        "[::1]:0",
-        key1,
-        Arc::new(AllowAllConnections),
-        Default::default(),
-    )
-    .unwrap();
-    let end2 = Endpoint::new(
-        "[::1]:0",
-        key2,
-        Arc::new(AllowAllConnections),
-        Default::default(),
-    )
-    .unwrap();
+    let end1 = Endpoint::new("[::1]:0", key1, Default::default()).unwrap();
+    let end2 = Endpoint::new("[::1]:0", key2, Default::default()).unwrap();
 
     let addr = end2.local_addr().unwrap();
 
@@ -91,20 +67,8 @@ async fn both_ecdsa384() {
     let key1 = Key::generate_for(mushi::SIGSCHEME_ECDSA384).unwrap();
     let key2 = Key::generate_for(mushi::SIGSCHEME_ECDSA384).unwrap();
 
-    let end1 = Endpoint::new(
-        "[::1]:0",
-        key1,
-        Arc::new(AllowAllConnections),
-        Default::default(),
-    )
-    .unwrap();
-    let end2 = Endpoint::new(
-        "[::1]:0",
-        key2,
-        Arc::new(AllowAllConnections),
-        Default::default(),
-    )
-    .unwrap();
+    let end1 = Endpoint::new("[::1]:0", key1, Default::default()).unwrap();
+    let end2 = Endpoint::new("[::1]:0", key2, Default::default()).unwrap();
 
     let addr = end2.local_addr().unwrap();
 
@@ -128,20 +92,8 @@ async fn ecdsa256_ecdsa384() {
     let key1 = Key::generate_for(mushi::SIGSCHEME_ECDSA256).unwrap();
     let key2 = Key::generate_for(mushi::SIGSCHEME_ECDSA384).unwrap();
 
-    let end1 = Endpoint::new(
-        "[::1]:0",
-        key1,
-        Arc::new(AllowAllConnections),
-        Default::default(),
-    )
-    .unwrap();
-    let end2 = Endpoint::new(
-        "[::1]:0",
-        key2,
-        Arc::new(AllowAllConnections),
-        Default::default(),
-    )
-    .unwrap();
+    let end1 = Endpoint::new("[::1]:0", key1, Default::default()).unwrap();
+    let end2 = Endpoint::new("[::1]:0", key2, Default::default()).unwrap();
 
     let addr = end2.local_addr().unwrap();
 
@@ -165,20 +117,8 @@ async fn ecdsa256_ed25519() {
     let key1 = Key::generate_for(mushi::SIGSCHEME_ECDSA256).unwrap();
     let key2 = Key::generate_for(mushi::SIGSCHEME_ED25519).unwrap();
 
-    let end1 = Endpoint::new(
-        "[::1]:0",
-        key1,
-        Arc::new(AllowAllConnections),
-        Default::default(),
-    )
-    .unwrap();
-    let end2 = Endpoint::new(
-        "[::1]:0",
-        key2,
-        Arc::new(AllowAllConnections),
-        Default::default(),
-    )
-    .unwrap();
+    let end1 = Endpoint::new("[::1]:0", key1, Default::default()).unwrap();
+    let end2 = Endpoint::new("[::1]:0", key2, Default::default()).unwrap();
 
     let addr = end2.local_addr().unwrap();
 

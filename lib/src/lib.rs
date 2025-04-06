@@ -114,6 +114,25 @@ pub struct EndpointOptions {
     /// You can select different strategies from [`quinn::congestion`] or elsewhere to optimise for
     /// throughput or latency. The default strategy is Cubic, aka RFC 8312 (TCP's algorithm).
     pub congestion_control: Arc<(dyn ControllerFactory + Send + Sync + 'static)>,
+
+    /// A global keys trust policy.
+    ///
+    /// This is checked before any peer is allowed to connect or be connected to, early in the
+    /// handshake process, before any link information is available. You may use this as an
+    /// additional security layer, or for efficiency to drop unauthorised peers early.
+    ///
+    /// Return `Ok(())` to allow the peer identified by the key, and `Err(_)` to reject the peer.
+    /// You should select an appropriate [`CertificateError`]; if in doubt, use
+    /// [`ApplicationVerificationFailure`](CertificateError::ApplicationVerificationFailure).
+    ///
+    /// By default all keys are allowed (i.e. peers are checked at link establishment only).
+    #[allow(clippy::type_complexity)]
+    pub key_trust_policy: Arc<
+        dyn (Fn(SubjectPublicKeyInfoDer<'_>) -> Result<(), CertificateError>)
+            + Send
+            + Sync
+            + 'static,
+    >,
 }
 
 impl fmt::Debug for EndpointOptions {
@@ -131,41 +150,12 @@ impl Default for EndpointOptions {
             require_client_auth: true,
             check_validity_period: false,
             congestion_control: Arc::new(quinn::congestion::CubicConfig::default()),
+            key_trust_policy: Arc::new(|_| Ok(())),
         }
     }
 }
 
-/// The "allower" trait, which defines a peer trust policy.
-pub trait AllowConnection: std::fmt::Debug + Send + Sync + 'static {
-    /// Given a public key, determine whether a connection (peer) should be allowed.
-    ///
-    /// Return `Ok(())` to allow the peer to connect (or be connected to), and `Err(_)` to reject
-    /// the peer. You should select an appropriate [`CertificateError`]; if in doubt, use
-    /// [`ApplicationVerificationFailure`](CertificateError::ApplicationVerificationFailure).
-    fn allow_public_key(&self, key: SubjectPublicKeyInfoDer<'_>) -> Result<(), CertificateError>;
-}
-
-/// A convenience allower which accepts all public keys.
-///
-/// This is not recommended for use in real applications, but may be useful for testing.
-///
-/// `require_client_auth` is `true`.
-#[derive(Debug, Clone, Copy)]
-pub struct AllowAllConnections;
-
-impl AllowConnection for AllowAllConnections {
-    fn allow_public_key(&self, _key: SubjectPublicKeyInfoDer<'_>) -> Result<(), CertificateError> {
-        Ok(())
-    }
-}
-
-#[derive(Debug, Clone)]
-struct ConnectionAllower {
-    allower: Arc<dyn AllowConnection>,
-    options: EndpointOptions,
-}
-
-impl ServerCertVerifier for ConnectionAllower {
+impl ServerCertVerifier for EndpointOptions {
     fn verify_server_cert(
         &self,
         end_entity: &CertificateDer<'_>,
@@ -176,12 +166,11 @@ impl ServerCertVerifier for ConnectionAllower {
     ) -> Result<ServerCertVerified, rustls::Error> {
         let cert = ParsedCertificate::try_from(end_entity)?;
 
-        if self.options.check_validity_period {
+        if self.check_validity_period {
             todo!("check_validity_period");
         }
 
-        self.allower
-            .allow_public_key(cert.subject_public_key_info())
+        (self.key_trust_policy)(cert.subject_public_key_info())
             .map_err(rustls::Error::from)
             .and(Ok(ServerCertVerified::assertion()))
     }
@@ -215,7 +204,7 @@ impl ServerCertVerifier for ConnectionAllower {
     }
 }
 
-impl ClientCertVerifier for ConnectionAllower {
+impl ClientCertVerifier for EndpointOptions {
     fn root_hint_subjects(&self) -> &[DistinguishedName] {
         &[]
     }
@@ -228,12 +217,11 @@ impl ClientCertVerifier for ConnectionAllower {
     ) -> Result<ClientCertVerified, rustls::Error> {
         let cert = ParsedCertificate::try_from(end_entity)?;
 
-        if self.options.check_validity_period {
+        if self.check_validity_period {
             todo!("check_validity_period");
         }
 
-        self.allower
-            .allow_public_key(cert.subject_public_key_info())
+        (self.key_trust_policy)(cert.subject_public_key_info())
             .map_err(rustls::Error::from)
             .and(Ok(ClientCertVerified::assertion()))
     }
@@ -267,22 +255,21 @@ impl ClientCertVerifier for ConnectionAllower {
     }
 
     fn client_auth_mandatory(&self) -> bool {
-        self.options.require_client_auth
+        self.require_client_auth
     }
 }
 
 /// The main entrypoint to create connections to, and accept connections from other Mushi peers.
 ///
 /// Generally, an application will have a single endpoint instance. This results in more optimal
-/// network behaviour, and as a single endpoint can have sessions to any number of peers, and each
-/// session supports many concurrent datagrams and streams, there's little need (outside of
-/// testing) for multiple endpoints.
+/// network behaviour, and as a single endpoint can many independent links to any number of peers,
+/// there's little need (outside of testing) for multiple endpoints.
 ///
 /// Before creating an endpoint, ensure that a default [`rustls::crypto::CryptoProvider`] has been
 /// installed, preferably using [`install_crypto_provider()`].
 #[derive(Clone)]
 pub struct Endpoint {
-    options: EndpointOptions,
+    options: Arc<EndpointOptions>,
     client_config: quinn::ClientConfig,
     server: Arc<Mutex<web_transport::Server>>,
     key: Arc<Key>,
@@ -314,28 +301,20 @@ impl Endpoint {
     /// If `bind_to` resolves to multiple socket addresses, the first that succeeds creation of the
     /// socket will be used.
     ///
-    /// `allower` is the trust policy for remote peers: incoming (client certificate) and outgoing
-    /// (server certificate) peers will have their public key extracted and checked by the
-    /// [`AllowConnection`] implementation.
-    ///
     /// Requires a Tokio runtime, even though the function is not async.
     pub fn new(
         bind_to: impl ToSocketAddrs,
         key: Key,
-        allower: Arc<dyn AllowConnection>,
         options: EndpointOptions,
     ) -> Result<Self, Error> {
         let provider = Arc::new(rustls::crypto::ring::default_provider());
         let key = Arc::new(key);
-        let allower = Arc::new(ConnectionAllower {
-            allower,
-            options: options.clone(),
-        });
+        let options = Arc::new(options);
 
         let mut server_config = rustls::ServerConfig::builder_with_provider(provider.clone())
             .with_protocol_versions(&[&rustls::version::TLS13])
             .unwrap()
-            .with_client_cert_verifier(allower.clone())
+            .with_client_cert_verifier(options.clone())
             .with_cert_resolver(key.clone());
         server_config.alpn_protocols = vec![ALPN.to_vec()];
 
@@ -343,7 +322,7 @@ impl Endpoint {
             .with_protocol_versions(&[&rustls::version::TLS13])
             .unwrap()
             .dangerous()
-            .with_custom_certificate_verifier(allower)
+            .with_custom_certificate_verifier(options.clone())
             .with_client_cert_resolver(key.clone());
         client_config.alpn_protocols = vec![ALPN.to_vec()];
 
