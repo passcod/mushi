@@ -17,6 +17,7 @@ rcgen = "0.13.2"
 ring = "0.17.14"
 thiserror = "2.0.12"
 time = "0.3.41"
+tinyvec = "1.9.0"
 tokio = { version = "1.44.1", features = ["sync"] }
 tracing = "0.1.41"
 url = "2.5.4"

@@ -601,6 +601,7 @@ dependencies = [
  "ring",
  "thiserror 2.0.12",
  "time",
+ "tinyvec",
  "tokio",
  "tracing",
  "tracing-subscriber",
