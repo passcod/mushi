@@ -27,3 +27,5 @@ web-transport-quinn = { version = "0.6.1", default-features = false, features = 
 tokio = { version = "1.44.1", features = ["full"] }
 tracing-subscriber = "0.3.19"
 
+[lints.rust]
+missing_debug_implementations = "deny"
