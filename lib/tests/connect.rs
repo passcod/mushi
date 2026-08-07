@@ -1,158 +1,280 @@
+//! End-to-end tests against a client that pins the certificate hash, exactly as a browser does.
+
 use std::sync::{Arc, LazyLock};
 
-use mushi::{AllowAllConnections, Endpoint, EndpointKey, Error};
+use mushi::{
+    Certificate, DEFAULT_VALIDITY, Identity, San, Server, Session, StatusCode, Url, quinn,
+    rustls::{
+        self, DigitallySignedStruct, SignatureScheme,
+        client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier},
+        crypto::{CryptoProvider, verify_tls13_signature},
+        pki_types::{CertificateDer, ServerName, UnixTime},
+    },
+    web_transport::{ALPN, Client, crypto},
+};
 use tokio::task::{JoinHandle, spawn};
 
 static SETUP: LazyLock<()> = LazyLock::new(|| {
     tracing_subscriber::fmt()
         .with_max_level(tracing::Level::INFO)
         .init();
-    mushi::install_crypto_provider();
 });
 
-#[tokio::test]
-async fn connection() {
-    *SETUP;
+/// Accepts a server certificate if its SHA-256 is one we were given, and performs no chain or name
+/// validation at all — which is what a browser does with `serverCertificateHashes`.
+///
+/// Upstream ships an equivalent, but its builder binds `[::]:0` unconditionally, so we construct
+/// the endpoint ourselves to stay usable on hosts without IPv6.
+#[derive(Debug)]
+struct PinnedHashes {
+    provider: Arc<CryptoProvider>,
+    allowed: Vec<Vec<u8>>,
+}
 
-    let key1 = EndpointKey::generate().unwrap();
-    let key2 = EndpointKey::generate().unwrap();
-
-    let end1 = Endpoint::new("[::1]:0", key1, Arc::new(AllowAllConnections), None).unwrap();
-    let end2 = Endpoint::new("[::1]:0", key2, Arc::new(AllowAllConnections), None).unwrap();
-
-    let addr = end2.local_addr().unwrap();
-
-    let task: JoinHandle<Result<(), Error>> = spawn(async move {
-        if let Some(sesh) = end2.accept().await {
-            let sesh = sesh?;
-            sesh.closed().await?;
+impl ServerCertVerifier for PinnedHashes {
+    fn verify_server_cert(
+        &self,
+        end_entity: &CertificateDer<'_>,
+        _intermediates: &[CertificateDer<'_>],
+        _server_name: &ServerName<'_>,
+        _ocsp: &[u8],
+        _now: UnixTime,
+    ) -> Result<ServerCertVerified, rustls::Error> {
+        let hash = crypto::sha256(&self.provider, end_entity);
+        if self.allowed.iter().any(|a| a == hash.as_ref()) {
+            Ok(ServerCertVerified::assertion())
+        } else {
+            Err(rustls::Error::General("certificate hash not pinned".into()))
         }
+    }
 
-        Ok(())
+    fn verify_tls12_signature(
+        &self,
+        _message: &[u8],
+        _cert: &CertificateDer<'_>,
+        _dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        unimplemented!("WebTransport is TLS 1.3 only")
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        verify_tls13_signature(
+            message,
+            cert,
+            dss,
+            &self.provider.signature_verification_algorithms,
+        )
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        self.provider
+            .signature_verification_algorithms
+            .supported_schemes()
+    }
+}
+
+/// Bind to IPv4 loopback: not every CI runner (or container) has IPv6 configured.
+fn server() -> (Server, Certificate) {
+    let id = Identity::generate().unwrap();
+    let cert = id.issue(DEFAULT_VALIDITY, Vec::<San>::new()).unwrap();
+    let server = Server::builder()
+        .with_addr("127.0.0.1:0".parse().unwrap())
+        .with_certificate(cert.clone())
+        .unwrap();
+    (server, cert)
+}
+
+/// A client that trusts exactly the hashes given, the way a page passes `serverCertificateHashes`.
+fn client_pinning(certs: &[&Certificate]) -> Client {
+    let provider = crypto::default_provider();
+    let verifier = Arc::new(PinnedHashes {
+        provider: provider.clone(),
+        allowed: certs.iter().map(|c| c.hash().value.clone()).collect(),
     });
 
-    end1.connect(addr).await.unwrap();
+    let mut tls = rustls::ClientConfig::builder_with_provider(provider)
+        .with_protocol_versions(&[&rustls::version::TLS13])
+        .unwrap()
+        .dangerous()
+        .with_custom_certificate_verifier(verifier)
+        .with_no_client_auth();
+    tls.alpn_protocols = vec![ALPN.as_bytes().to_vec()];
+
+    let config = quinn::ClientConfig::new(Arc::new(
+        quinn::crypto::rustls::QuicClientConfig::try_from(tls).unwrap(),
+    ));
+    let endpoint = quinn::Endpoint::client("127.0.0.1:0".parse().unwrap()).unwrap();
+
+    Client::new(endpoint, config)
+}
+
+fn url(server: &Server, path: &str) -> Url {
+    let addr = server.local_addr().unwrap();
+    Url::parse(&format!("https://{addr}{path}")).unwrap()
+}
+
+/// Accept every request, handing the session back.
+fn serve(server: Server) -> (JoinHandle<()>, tokio::sync::mpsc::Receiver<Session>) {
+    let (tx, rx) = tokio::sync::mpsc::channel(4);
+    let task = spawn(async move {
+        while let Some(req) = server.accept().await {
+            let Ok(session) = req.ok().await else {
+                continue;
+            };
+            if tx.send(session).await.is_err() {
+                break;
+            }
+        }
+    });
+    (task, rx)
+}
+
+#[tokio::test]
+async fn connects_when_the_hash_matches() {
+    *SETUP;
+
+    let (server, cert) = server();
+    let target = url(&server, "/");
+    let client = client_pinning(&[&cert]);
+    let (task, mut sessions) = serve(server);
+
+    let session = client.connect(target).await.unwrap();
+    let accepted = sessions.recv().await.unwrap();
+
+    // Prove the session is actually live, not merely handed over.
+    session.send_datagram("hello".as_bytes().into()).unwrap();
+    assert_eq!(&accepted.recv_datagram().await.unwrap()[..], b"hello");
     task.abort();
 }
 
 #[tokio::test]
-async fn datagram() {
+async fn rejects_when_the_hash_does_not_match() {
     *SETUP;
 
-    let key1 = EndpointKey::generate().unwrap();
-    let key2 = EndpointKey::generate().unwrap();
+    let (server, _cert) = server();
+    let target = url(&server, "/");
 
-    let end1 = Endpoint::new("[::1]:0", key1, Arc::new(AllowAllConnections), None).unwrap();
-    let end2 = Endpoint::new("[::1]:0", key2, Arc::new(AllowAllConnections), None).unwrap();
+    // A different certificate entirely: the client should refuse the handshake.
+    let other = Identity::generate()
+        .unwrap()
+        .issue(DEFAULT_VALIDITY, Vec::<San>::new())
+        .unwrap();
+    let client = client_pinning(&[&other]);
+    let (task, _sessions) = serve(server);
 
-    let addr = end2.local_addr().unwrap();
-
-    let task: JoinHandle<Result<(), Error>> = spawn(async move {
-        if let Some(sesh) = end2.accept().await {
-            let sesh = sesh?;
-            let data = sesh.recv_datagram().await.unwrap();
-            assert_eq!(data, "Hello");
-            sesh.send_datagram("World".into()).unwrap();
-            sesh.closed().await?;
-        }
-
-        Ok(())
-    });
-
-    let sesh = end1.connect(addr).await.unwrap();
-    sesh.send_datagram("Hello".into()).unwrap();
-    let data = sesh.recv_datagram().await.unwrap();
-    assert_eq!(data, "World");
-    sesh.close(0, "end");
-    task.await.unwrap().unwrap();
+    client.connect(target).await.unwrap_err();
+    task.abort();
 }
 
 #[tokio::test]
-async fn unidi() {
+async fn accepts_any_of_several_pinned_hashes() {
     *SETUP;
 
-    let key1 = EndpointKey::generate().unwrap();
-    let key2 = EndpointKey::generate().unwrap();
+    let (server, cert) = server();
+    let target = url(&server, "/");
 
-    let end1 = Endpoint::new("[::1]:0", key1, Arc::new(AllowAllConnections), None).unwrap();
-    let end2 = Endpoint::new("[::1]:0", key2, Arc::new(AllowAllConnections), None).unwrap();
-
-    let addr = end2.local_addr().unwrap();
-
-    let task: JoinHandle<Result<(), Error>> = spawn(async move {
-        if let Some(sesh) = end2.accept().await {
-            let sesh = sesh?;
-            let data = sesh
-                .accept_uni()
-                .await
-                .unwrap()
-                .read(5)
-                .await
-                .unwrap()
-                .unwrap();
-            assert_eq!(data, "Hello");
-            sesh.open_uni()
-                .await
-                .unwrap()
-                .write(b"World")
-                .await
-                .unwrap();
-            sesh.closed().await?;
-        }
-
-        Ok(())
-    });
-
-    let sesh = end1.connect(addr).await.unwrap();
-    sesh.open_uni()
-        .await
+    // Publishing current and next together is what makes rotation seamless.
+    let next = Identity::generate()
         .unwrap()
-        .write(b"Hello")
-        .await
+        .issue(DEFAULT_VALIDITY, Vec::<San>::new())
         .unwrap();
-    let data = sesh
-        .accept_uni()
-        .await
-        .unwrap()
-        .read(5)
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(data, "World");
-    sesh.close(0, "end");
-    task.await.unwrap().unwrap();
+    let client = client_pinning(&[&next, &cert]);
+    let (task, mut sessions) = serve(server);
+
+    client.connect(target).await.unwrap();
+    sessions.recv().await.unwrap();
+    task.abort();
 }
 
 #[tokio::test]
-async fn bidi() {
+async fn rotation_swaps_the_served_certificate() {
     *SETUP;
 
-    let key1 = EndpointKey::generate().unwrap();
-    let key2 = EndpointKey::generate().unwrap();
+    let (server, first) = server();
+    let target = url(&server, "/");
 
-    let end1 = Endpoint::new("[::1]:0", key1, Arc::new(AllowAllConnections), None).unwrap();
-    let end2 = Endpoint::new("[::1]:0", key2, Arc::new(AllowAllConnections), None).unwrap();
+    let id = Identity::generate().unwrap();
+    let second = id.issue(DEFAULT_VALIDITY, Vec::<San>::new()).unwrap();
+    server.set_certificate(second.clone()).unwrap();
+    assert_eq!(server.certificate().hash(), second.hash());
 
-    let addr = end2.local_addr().unwrap();
+    let (task, mut sessions) = serve(server);
 
-    let task: JoinHandle<Result<(), Error>> = spawn(async move {
-        if let Some(sesh) = end2.accept().await {
-            let sesh = sesh?;
-            let (mut s, mut r) = sesh.accept_bi().await.unwrap();
-            s.write(b"World").await.unwrap();
-            let data = r.read(5).await.unwrap().unwrap();
-            assert_eq!(data, "Hello");
-            sesh.closed().await?;
+    // The new hash works...
+    client_pinning(&[&second])
+        .connect(target.clone())
+        .await
+        .unwrap();
+    sessions.recv().await.unwrap();
+
+    // ...and the old one no longer does.
+    client_pinning(&[&first]).connect(target).await.unwrap_err();
+    task.abort();
+}
+
+#[tokio::test]
+async fn routes_and_rejects_on_the_path() {
+    *SETUP;
+
+    let (server, cert) = server();
+    let allowed = url(&server, "/allowed");
+    let denied = url(&server, "/denied");
+
+    let task = spawn(async move {
+        while let Some(req) = server.accept().await {
+            // The path is the only part of the handshake a browser controls.
+            if req.path() == "/allowed" {
+                let _ = req.ok().await;
+            } else {
+                let _ = req.reject(StatusCode::NOT_FOUND).await;
+            }
         }
-
-        Ok(())
     });
 
-    let sesh = end1.connect(addr).await.unwrap();
-    let (mut s, mut r) = sesh.open_bi().await.unwrap();
-    s.write(b"Hello").await.unwrap();
-    let data = r.read(5).await.unwrap().unwrap();
-    assert_eq!(data, "World");
-    sesh.close(0, "end");
-    task.await.unwrap().unwrap();
+    client_pinning(&[&cert]).connect(allowed).await.unwrap();
+    client_pinning(&[&cert]).connect(denied).await.unwrap_err();
+    task.abort();
+}
+
+#[tokio::test]
+async fn exchanges_datagrams_and_streams() {
+    *SETUP;
+
+    let (server, cert) = server();
+    let target = url(&server, "/");
+    let client = client_pinning(&[&cert]);
+    let (task, mut sessions) = serve(server);
+
+    let client_session = client.connect(target).await.unwrap();
+    let server_session = sessions.recv().await.unwrap();
+
+    // Datagram, client to server.
+    client_session
+        .send_datagram("hello".as_bytes().into())
+        .unwrap();
+    assert_eq!(&server_session.recv_datagram().await.unwrap()[..], b"hello");
+
+    // Bidirectional stream, client to server and back.
+    let (mut cs, mut cr) = client_session.open_bi().await.unwrap();
+    cs.write_all(b"ping").await.unwrap();
+    let (mut ss, mut sr) = server_session.accept_bi().await.unwrap();
+    assert_eq!(&sr.read(64).await.unwrap().unwrap()[..], b"ping");
+    ss.write(b"pong").await.unwrap();
+    let mut buf = [0u8; 4];
+    cr.read_exact(&mut buf).await.unwrap();
+    assert_eq!(&buf, b"pong");
+
+    // Unidirectional stream, server pushing to the client unprompted.
+    let mut push = server_session.open_uni().await.unwrap();
+    push.write(b"push").await.unwrap();
+    push.finish().unwrap();
+    let mut incoming = client_session.accept_uni().await.unwrap();
+    assert_eq!(&incoming.read_to_end(64).await.unwrap()[..], b"push");
+
+    task.abort();
 }

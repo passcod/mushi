@@ -1,631 +1,591 @@
-//! Mushi is point-to-point QUIC networking with application-defined mutual authentication.
+//! Mushi is a [WebTransport] server that browsers authenticate by **certificate hash** instead of
+//! web PKI.
 //!
-//! It takes inspiration from [Iroh](https://iroh.computer) and its APIs are based on
-//! [WebTransport](https://developer.mozilla.org/en-US/docs/Web/API/WebTransport).
+//! A browser can't talk to a device that has no publicly-trusted certificate: local addresses
+//! can't get one, and mixed-content rules block plain HTTP. WebTransport's
+//! [`serverCertificateHashes`] option is the sanctioned way out — the page supplies the SHA-256 of
+//! the certificate it expects, and the browser skips chain validation entirely. Mushi is the
+//! server side of that arrangement.
 //!
-//! In Mushi, peers are identified by a persistent key pair (ECDSA or ED25519). Connecting to peers
-//! is done by DNS or IP addresses (it doesn't have peer discovery or NAT traversal). Endpoints
-//! define a trust policy, which is given a public key (which may be considered an opaque binary
-//! blob). Endpoints handle both outgoing (client) and incoming (server) function: typically, a
-//! single [Endpoint] is started per application. Connecting to (or accepting an incoming
-//! connection from) another peer creates a [Session], which supports sending and receiving
-//! unreliable datagrams as well as multiple concurrent unidirectional and bidirectional streams.
+//! The intended deployment is a **cloud app over real HTTPS plus a local device**: the page is
+//! loaded from an origin the browser already trusts, that origin tells the page which certificate
+//! hashes the device is currently serving, and the page connects straight to the device.
 //!
-//! All communications are secured with TLS 1.3, with RSA suites explicitly disabled. Endpoints
-//! have a key pair (which may be generated on startup), and each connection uses a unique
-//! just-in-time short-lived certificate (valid for 2 minutes).
+//! Nothing needs to be installed in the browser — the native [`WebTransport`] API is enough.
 //!
-//! This provides authentication: peers are guaranteed to have control over their own key pair, and
-//! it's unfeasible for an attacker in possession of a public key to obtain the associate private
-//! key to be able to successfully spoof an endpoint.
+//! # What the browser imposes
 //!
-//! However, it does not provide authorisation. Mushi applications should implement this with one
-//! or two layers: the [`AllowConnection`] trait provides an application with a simple peer trust
-//! policy ("should we allow this peer to connect or be connected to"), and application-specific
-//! schemes layered on top of connections. This latter layer is not provided nor facilitated by
-//! Mushi (except to the extent that an established session can retrieve its remote peer's public
-//! key using [`Session::peer_key()`]): it is the responsibility of application implementers to
-//! decide whether authorisation beyond peer public key trust is required, and how.
+//! The certificate rules aren't Mushi's; they come from the WebTransport specification, and they
+//! shape the whole design:
+//!
+//! - **ECDSA P-256 only.** RSA is banned outright, and Ed25519 is not permitted either.
+//! - **Under 14 days of validity**, and the current time must fall inside it. Short life stands in
+//!   for revocation, so certificates must be rotated rather than issued once.
+//! - **SHA-256** is the only hash algorithm currently specified.
+//! - **No client certificates.** The browser has no way to present one, at any layer. Authenticate
+//!   peers over the session instead — see [`Request`] for what's available at handshake time.
+//!
+//! Because the browser pins a hash of the whole certificate, it doesn't care what's inside. That
+//! makes the scheme naturally agile: [`serverCertificateHashes`] takes a *list*, so you can publish
+//! hashes for several certificates at once and let the TLS handshake pick between them. Mushi
+//! keeps [`SigScheme`] open for that reason, even though P-256 is the only scheme browsers accept
+//! today.
 //!
 //! # Example
 //!
-//! ```ignore
-//! #[tokio::main]
-//! async fn main() {
-//!     mushi::install_crypto_provider();
+//! ```no_run
+//! # async fn example() -> Result<(), mushi::Error> {
+//! let identity = mushi::Identity::generate()?;
+//! let cert = identity.issue(mushi::DEFAULT_VALIDITY, ["device.local".parse().unwrap()])?;
 //!
-//!     let key = mushi::EndpointKey::generate().unwrap();
-//!     let policy = Arc::new(mushi::AllowAllConnections);
-//!     let end = Endpoint::new("[::]:0", key, policy, None).unwrap();
+//! // Hand this to the browser out of band, over an origin it already trusts.
+//! println!("serverCertificateHashes: {}", cert.hash().to_hex());
 //!
-//!     let mut session = end.connect("remotepeer.example.com:1310").await.unwrap();
-//!     session.send_datagram("Hello world".into()).unwrap();
+//! let server = mushi::Server::builder()
+//!     .with_addr("[::]:4433".parse().unwrap())
+//!     .with_certificate(cert)?;
 //!
-//!     let (mut s, mut r) = session.open_bi().await.unwrap();
-//!     s.write(b"How are you today?").await.unwrap();
-//!     let response = r.read(1024).await.unwrap();
-//!     println!("peer said: {response:x?}");
+//! while let Some(request) = server.accept().await {
+//!     // The path is the only part of the handshake the browser controls, so it carries both
+//!     // the protocol selection and whatever token you authenticate with.
+//!     match request.path() {
+//!         "/echo" => {
+//!             let session = request.ok().await?;
+//!             let _ = session.recv_datagram().await?;
+//!         }
+//!         _ => request.reject(mushi::StatusCode::NOT_FOUND).await?,
+//!     }
 //! }
+//! # Ok(())
+//! # }
 //! ```
 #![warn(missing_docs)]
 
 use std::{
-    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs},
-    sync::Arc,
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
+    sync::{Arc, RwLock},
 };
 
+use tokio::sync::Mutex;
+
+pub use http::StatusCode;
 pub use rcgen;
-pub use rustls::{CertificateError, pki_types::SubjectPublicKeyInfoDer};
+pub use time;
 pub use url::Url;
 pub use web_transport_quinn::{self as web_transport, quinn, quinn::rustls};
 
 use bytes::{Buf, BufMut, Bytes};
-use quinn::{
-    ApplicationClose, ConnectionError,
-    congestion::ControllerFactory,
-    crypto::rustls::{QuicClientConfig, QuicServerConfig},
-};
-use rcgen::{CertificateParams, DistinguishedName as Dn, DnType, KeyPair};
+use quinn::{congestion::ControllerFactory, crypto::rustls::QuicServerConfig};
+use rcgen::{CertificateParams, DistinguishedName as Dn, DnType, KeyPair, SanType};
 use rustls::{
-    DigitallySignedStruct, DistinguishedName, KeyLogFile, SignatureScheme,
-    client::{
-        ResolvesClientCert,
-        danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier},
-    },
-    crypto::{CryptoProvider, WebPkiSupportedAlgorithms, verify_tls13_signature},
-    pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime, alg_id},
-    server::{
-        ClientHello, ParsedCertificate, ResolvesServerCert,
-        danger::{ClientCertVerified, ClientCertVerifier},
-    },
+    KeyLogFile, SignatureScheme,
+    pki_types::{CertificateDer, PrivateKeyDer},
+    server::{ClientHello, ResolvesServerCert},
     sign::CertifiedKey,
 };
 use time::{Duration, OffsetDateTime};
-use tokio::sync::Mutex;
-use tracing::trace;
-use web_transport::{ALPN, SessionError};
+use web_transport::{ALPN, crypto};
 
-/// Install a default [`CryptoProvider`] specialised for Mushi applications.
+/// The longest a certificate may be valid for and still be accepted by a browser.
 ///
-/// This uses _ring_ and specifically disallows all uses of RSA. If you require RSA for other TLS
-/// or _ring_ applications, either use the `with_provider` variants of builders for these, or use
-/// [`rustls::crypto::ring::default_provider()`] directly instead.
-pub fn install_crypto_provider() {
-    let mut provider = rustls::crypto::ring::default_provider();
-    let algos = Box::leak(
-        provider
-            .signature_verification_algorithms
-            .all
-            .iter()
-            .cloned()
-            .filter(|a| a.public_key_alg_id() != alg_id::RSA_ENCRYPTION)
-            .collect::<Vec<_>>()
-            .into_boxed_slice(),
-    );
-    let mappings = Box::leak(
-        provider
-            .signature_verification_algorithms
-            .mapping
-            .iter()
-            .cloned()
-            .filter(|(sig, _)| sig.as_str().is_some_and(|s| !s.contains("RSA")))
-            .collect::<Vec<_>>()
-            .into_boxed_slice(),
-    );
-    provider.signature_verification_algorithms = WebPkiSupportedAlgorithms {
-        all: algos,
-        mapping: mappings,
-    };
-    trace!(?provider, "mushi crypto provider");
-    provider.install_default().unwrap();
-}
+/// The WebTransport specification requires under two weeks. A certificate at exactly this length
+/// is liable to be rejected by rounding, so [`Identity::issue`] refuses anything at or above it.
+pub const MAX_VALIDITY: Duration = Duration::days(14);
 
-/// A key pair that identifies and authenticates an [`Endpoint`].
+/// A sensible certificate lifetime, leaving room to rotate before expiry.
+pub const DEFAULT_VALIDITY: Duration = Duration::days(13);
+
+/// A signature scheme for an [`Identity`].
+///
+/// This is the tuple of the [rustls] type (for TLS) and the corresponding [rcgen] type (for
+/// issuing certificates).
+///
+/// Only [`SIGSCHEME_ECDSA256`] is accepted by browsers today. The type stays open because the
+/// certificate-hash mechanism doesn't inspect the key, so widening this later needs no protocol
+/// change — see [`BROWSER_SIGSCHEMES`].
+pub type SigScheme = (SignatureScheme, &'static rcgen::SignatureAlgorithm);
+
+/// Keys using ECDSA and the NIST P-256 curve.
+///
+/// The only scheme browsers currently accept for certificate-hash connections.
+pub const SIGSCHEME_ECDSA256: SigScheme = (
+    SignatureScheme::ECDSA_NISTP256_SHA256,
+    &rcgen::PKCS_ECDSA_P256_SHA256,
+);
+
+/// Every scheme browsers currently accept for certificate-hash connections.
+///
+/// Checked by [`Identity::issue`]. Serving a certificate outside this set is legal — a native
+/// client may well accept it — but no browser will connect.
+pub const BROWSER_SIGSCHEMES: &[SigScheme] = &[SIGSCHEME_ECDSA256];
+
+/// The long-lived key pair identifying a Mushi server.
+///
+/// The key outlives the certificates issued from it. Browsers pin the certificate rather than the
+/// key, so rotating a certificate changes the hash even when the key stays the same; publish the
+/// new hash before serving it.
 #[derive(Debug, Clone)]
-pub struct EndpointKey {
+pub struct Identity {
     scheme: SigScheme,
     key: Arc<KeyPair>,
-
-    /// How long certificates should be valid for. Defaults to 2 minutes.
-    pub validity: Duration,
 }
 
-impl std::ops::Deref for EndpointKey {
+impl std::ops::Deref for Identity {
     type Target = KeyPair;
     fn deref(&self) -> &Self::Target {
         &self.key
     }
 }
 
-/// A signature scheme for generating and using an [`EndpointKey`].
-///
-/// Different endpoints can have different sigschemes and interoperate.
-///
-/// A SigScheme is the tuple of the [rustls] type (for TLS) and the corresponding [rcgen] type (for
-/// generating certificates). The `SIGSCHEME_*` constants provide for common schemes but it is
-/// possible to make your own should the libraries support more.
-pub type SigScheme = (SignatureScheme, &'static rcgen::SignatureAlgorithm);
-
-/// Small keys using the [Ed25519](https://ed25519.cr.yp.to/) scheme.
-pub const SIGSCHEME_ED25519: SigScheme = (SignatureScheme::ED25519, &rcgen::PKCS_ED25519);
-
-/// Keys using the [ECDSA] scheme and the NIST P-256 curve.
-///
-/// [ECDSA]: https://en.wikipedia.org/wiki/Elliptic_Curve_Digital_Signature_Algorithm
-pub const SIGSCHEME_ECDSA256: SigScheme = (
-    SignatureScheme::ECDSA_NISTP256_SHA256,
-    &rcgen::PKCS_ECDSA_P256_SHA256,
-);
-
-/// Keys using the [ECDSA] scheme and the NIST P-384 curve.
-///
-/// [ECDSA]: https://en.wikipedia.org/wiki/Elliptic_Curve_Digital_Signature_Algorithm
-pub const SIGSCHEME_ECDSA384: SigScheme = (
-    SignatureScheme::ECDSA_NISTP384_SHA384,
-    &rcgen::PKCS_ECDSA_P384_SHA384,
-);
-
-const MUSHI_TLD: &str = "xn--zqsr9q"; // 慕士
-
-impl EndpointKey {
-    /// Generate a new random key using the default scheme.
-    pub fn generate() -> Result<Self, rcgen::Error> {
-        Self::generate_for(SIGSCHEME_ED25519)
+impl Identity {
+    /// Generate a new random identity using ECDSA P-256.
+    pub fn generate() -> Result<Self, Error> {
+        Self::generate_for(SIGSCHEME_ECDSA256)
     }
 
-    /// Generate a new random key using a particular scheme.
-    pub fn generate_for(scheme: SigScheme) -> Result<Self, rcgen::Error> {
+    /// Generate a new random identity using a particular scheme.
+    ///
+    /// Prefer [`Identity::generate`] unless you're deliberately targeting non-browser clients:
+    /// browsers reject everything outside [`BROWSER_SIGSCHEMES`].
+    pub fn generate_for(scheme: SigScheme) -> Result<Self, Error> {
         Ok(Self {
             scheme,
             key: Arc::new(KeyPair::generate_for(scheme.1)?),
-            validity: Duration::MINUTE * 2,
         })
     }
 
-    /// Load an existing key from a [`rcgen::KeyPair`].
-    ///
-    /// Panics if `scheme` doesn't match the keypair.
-    pub fn load(key: KeyPair, scheme: SigScheme) -> Self {
-        if !key.compatible_algs().any(|alg| alg == scheme.1) {
-            panic!("KeyPair is not compatible with {scheme:?}");
-        }
-
-        Self {
+    /// Load an existing identity from a PEM-encoded PKCS#8 private key.
+    pub fn from_pem(pem: &str) -> Result<Self, Error> {
+        let key = KeyPair::from_pem(pem)?;
+        let scheme = BROWSER_SIGSCHEMES
+            .iter()
+            .copied()
+            .find(|(_, alg)| key.is_compatible(alg))
+            .ok_or(Error::UnsupportedKey)?;
+        Ok(Self {
             scheme,
             key: Arc::new(key),
-            validity: Duration::MINUTE * 2,
+        })
+    }
+
+    /// Load an existing identity from an [`rcgen::KeyPair`].
+    ///
+    /// Errors if the key pair isn't compatible with `scheme`.
+    pub fn load(key: KeyPair, scheme: SigScheme) -> Result<Self, Error> {
+        if !key.is_compatible(scheme.1) {
+            return Err(Error::UnsupportedKey);
+        }
+
+        Ok(Self {
+            scheme,
+            key: Arc::new(key),
+        })
+    }
+
+    /// The signature scheme this identity uses.
+    pub fn scheme(&self) -> SigScheme {
+        self.scheme
+    }
+
+    /// Issue a certificate for this identity.
+    ///
+    /// `validity` must be under [`MAX_VALIDITY`], or browsers will refuse the connection;
+    /// [`DEFAULT_VALIDITY`] is a good choice.
+    ///
+    /// `sans` are the subject alternative names the certificate covers. Certificate-hash
+    /// connections skip chain validation, but include the addresses the device is actually reached
+    /// on regardless — it costs nothing and doesn't rely on every browser agreeing to skip name
+    /// checks too. Loopback names are always included.
+    ///
+    /// The certificate is issued slightly in the past, so that a device whose clock is a little
+    /// behind the browser's is still usable.
+    pub fn issue(
+        &self,
+        validity: Duration,
+        sans: impl IntoIterator<Item = San>,
+    ) -> Result<Certificate, Error> {
+        if validity >= MAX_VALIDITY {
+            return Err(Error::ValidityTooLong(validity));
+        }
+        if validity <= Duration::ZERO {
+            return Err(Error::ValidityTooShort(validity));
+        }
+
+        let mut names = vec![
+            SanType::DnsName("localhost".try_into()?),
+            SanType::IpAddress(IpAddr::V4(Ipv4Addr::LOCALHOST)),
+            SanType::IpAddress(IpAddr::V6(Ipv6Addr::LOCALHOST)),
+        ];
+        for san in sans {
+            let san = san.into_rcgen()?;
+            if !names.contains(&san) {
+                names.push(san);
+            }
+        }
+
+        let mut params = CertificateParams::default();
+        params.subject_alt_names = names;
+        params.distinguished_name = Dn::new();
+        params.distinguished_name.push(DnType::CommonName, "mushi");
+
+        // Backdate slightly: certificate periods are checked by the browser at handshake, and a
+        // device whose clock trails the browser's would otherwise be unreachable.
+        let skew = Duration::minutes(5);
+        let not_before = OffsetDateTime::now_utc() - skew;
+        let not_after = not_before + validity;
+        params.not_before = not_before;
+        params.not_after = not_after;
+
+        let cert = params.self_signed(&*self.key)?;
+        let der = CertificateDer::from(cert.der().to_vec());
+        let hash = CertHash::of(&der);
+
+        Ok(Certificate {
+            der,
+            key: self.key.clone(),
+            scheme: self.scheme,
+            hash,
+            not_before,
+            not_after,
+        })
+    }
+}
+
+/// A subject alternative name for an issued [`Certificate`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum San {
+    /// A DNS name, such as `device.local`.
+    Dns(String),
+    /// An IP address the device is reached on.
+    Ip(IpAddr),
+}
+
+impl San {
+    fn into_rcgen(self) -> Result<SanType, Error> {
+        Ok(match self {
+            San::Dns(name) => SanType::DnsName(name.try_into()?),
+            San::Ip(addr) => SanType::IpAddress(addr),
+        })
+    }
+}
+
+impl std::str::FromStr for San {
+    type Err = std::convert::Infallible;
+
+    /// Parses as an IP address if possible, and as a DNS name otherwise.
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match s.parse::<IpAddr>() {
+            Ok(ip) => San::Ip(ip),
+            Err(_) => San::Dns(s.to_owned()),
+        })
+    }
+}
+
+/// The hash of a certificate, as the browser expects it.
+///
+/// This mirrors the `WebTransportHash` dictionary: an algorithm name alongside the digest. Publish
+/// both — a bare digest can't survive the algorithm changing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CertHash {
+    /// The hash algorithm, in the spelling the browser API uses (`sha-256`).
+    pub algorithm: &'static str,
+
+    /// The digest itself.
+    pub value: Vec<u8>,
+}
+
+impl CertHash {
+    /// Compute the hash of a DER-encoded certificate.
+    pub fn of(cert: &CertificateDer<'_>) -> Self {
+        let provider = crypto::default_provider();
+        Self {
+            algorithm: "sha-256",
+            value: crypto::sha256(&provider, cert).as_ref().to_vec(),
         }
     }
 
-    fn supports_sigschemes(&self, requested: &[SignatureScheme]) -> bool {
-        requested.contains(&self.scheme.0)
-    }
-
-    fn get_certificate(&self) -> Option<Arc<CertifiedKey>> {
-        let cert = self.make_certificate().ok()?;
-        let provider = CryptoProvider::get_default().expect("a default CryptoProvider must be set");
-        Some(Arc::new(
-            CertifiedKey::from_der(
-                vec![cert.der().to_owned()],
-                PrivateKeyDer::Pkcs8(self.key.serialize_der().into()),
-                provider,
-            )
-            .ok()?,
-        ))
-    }
-
-    /// Generate a certificate for this key.
+    /// The digest as lowercase hex.
     ///
-    /// This is primarily used internally, but exposed for convenience if you're implementing the
-    /// transport yourself and don't want to bother making certificates correctly.
-    pub fn make_certificate(&self) -> Result<rcgen::Certificate, rcgen::Error> {
-        // some stacks balk if certificates don't have a SAN or DN.
-        // generate a fake SAN based on the fingerprint of the public key
-        // this plus the xn-- prefix = a 62-character DNS label, right under the limit
-        let print = ring::digest::digest(&ring::digest::SHA256, &self.key.public_key_der());
-        let puny = idna::punycode::encode_str(&base65536::encode(&print, None))
-            .unwrap_or(MUSHI_TLD.to_string());
-
-        // append a non-existing TLD so we never conflict with Internet resources
-        let san = format!("xn--{puny}.{MUSHI_TLD}");
-
-        let mut cert = CertificateParams::new(vec![san.clone()])?;
-        cert.distinguished_name = Dn::new();
-        cert.distinguished_name.push(DnType::CommonName, san);
-
-        // issue certificates valid slightly in the past, so that servers that aren't
-        // synchronised in time properly can talk to each other. certificate periods
-        // are checked on handshake only, and Mushi generates certificates just-in-time
-        let start = OffsetDateTime::now_utc() - Duration::MINUTE;
-        cert.not_before = start;
-        cert.not_after = start + Duration::MINUTE + self.validity;
-
-        cert.self_signed(&self.key)
-    }
-}
-
-impl ResolvesClientCert for EndpointKey {
-    fn resolve(&self, _hints: &[&[u8]], schemes: &[SignatureScheme]) -> Option<Arc<CertifiedKey>> {
-        if self.supports_sigschemes(schemes) {
-            self.get_certificate()
-        } else {
-            None
+    /// Convenient for handing to a browser, which wants the raw bytes:
+    ///
+    /// ```js
+    /// Uint8Array.from(hex.match(/../g).map((b) => parseInt(b, 16)))
+    /// ```
+    pub fn to_hex(&self) -> String {
+        let mut out = String::with_capacity(self.value.len() * 2);
+        for byte in &self.value {
+            use std::fmt::Write;
+            // UNWRAP: writing to a String is infallible
+            write!(out, "{byte:02x}").unwrap();
         }
-    }
-
-    fn has_certs(&self) -> bool {
-        true
+        out
     }
 }
 
-impl ResolvesServerCert for EndpointKey {
-    fn resolve(&self, _hello: ClientHello<'_>) -> Option<Arc<CertifiedKey>> {
-        self.get_certificate()
+impl std::fmt::Display for CertHash {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}:{}", self.algorithm, self.to_hex())
     }
 }
 
-/// The "allower" trait, which defines a peer trust policy.
-pub trait AllowConnection: std::fmt::Debug + Send + Sync + 'static {
-    /// Given a public key, determine whether a connection (peer) should be allowed.
-    ///
-    /// Return `Ok(())` to allow the peer to connect (or be connected to), and `Err(_)` to reject
-    /// the peer. You should select an appropriate [`CertificateError`]; if in doubt, use
-    /// [`ApplicationVerificationFailure`](CertificateError::ApplicationVerificationFailure).
-    fn allow_public_key(&self, key: SubjectPublicKeyInfoDer<'_>) -> Result<(), CertificateError>;
+/// A certificate issued from an [`Identity`], along with the hash browsers pin it by.
+#[derive(Debug, Clone)]
+pub struct Certificate {
+    der: CertificateDer<'static>,
+    key: Arc<KeyPair>,
+    scheme: SigScheme,
+    hash: CertHash,
+    not_before: OffsetDateTime,
+    not_after: OffsetDateTime,
+}
 
-    /// Whether incoming peers need to provide a certificate.
-    ///
-    /// This is `true` by default, and is the expectation in Mushi applications. In certain
-    /// use-cases, allowing "anonymous" clients may be necessary; take care to implement your own
-    /// authorisation layer as required.
-    fn require_client_auth(&self) -> bool {
-        true
+impl Certificate {
+    /// The hash to give the browser as `serverCertificateHashes`.
+    pub fn hash(&self) -> &CertHash {
+        &self.hash
     }
 
-    /// Whether validity periods are checked.
+    /// The DER encoding of the certificate.
+    pub fn der(&self) -> &CertificateDer<'static> {
+        &self.der
+    }
+
+    /// When the certificate becomes valid.
+    pub fn not_before(&self) -> OffsetDateTime {
+        self.not_before
+    }
+
+    /// When the certificate expires, after which browsers will refuse it.
+    pub fn not_after(&self) -> OffsetDateTime {
+        self.not_after
+    }
+
+    /// Whether the certificate is valid at the given time.
+    pub fn is_valid_at(&self, when: OffsetDateTime) -> bool {
+        when >= self.not_before && when < self.not_after
+    }
+
+    /// Whether the certificate could be accepted by a browser right now.
     ///
-    /// This is `false` by default: keys are just-in-time and all that really matter, and validity
-    /// periods are a polite fiction to make the TLS look normal. It might be useful for hardening
-    /// to enable this; this will also require that the system clocks within the distributed
-    /// system are synchronised to within the validity period (±1 minute by default).
-    fn check_validity_period(&self) -> bool {
-        false
+    /// False once it expires, or if it was issued under a scheme browsers don't accept.
+    pub fn is_browser_valid(&self) -> bool {
+        BROWSER_SIGSCHEMES.contains(&self.scheme) && self.is_valid_at(OffsetDateTime::now_utc())
+    }
+
+    fn certified_key(&self) -> Result<CertifiedKey, Error> {
+        let provider = crypto::default_provider();
+        Ok(CertifiedKey::from_der(
+            vec![self.der.clone()],
+            PrivateKeyDer::Pkcs8(self.key.serialize_der().into()),
+            &provider,
+        )?)
     }
 }
 
-/// A convenience allower which accepts all public keys.
+/// Resolves the certificate to serve for an incoming handshake.
 ///
-/// This is not recommended for use in real applications, but may be useful for testing.
-///
-/// `require_client_auth` is `true`.
-#[derive(Debug, Clone, Copy)]
-pub struct AllowAllConnections;
+/// Held behind a lock so the certificate can be replaced without restarting the server, which is
+/// what rotation will need.
+#[derive(Debug)]
+struct CertResolver {
+    current: RwLock<(Arc<CertifiedKey>, Certificate)>,
+}
 
-impl AllowConnection for AllowAllConnections {
-    fn allow_public_key(&self, _key: SubjectPublicKeyInfoDer<'_>) -> Result<(), CertificateError> {
+impl CertResolver {
+    fn certificate(&self) -> Certificate {
+        // UNWRAP: the lock is only ever held for the length of a clone, and nothing panics under it
+        self.current.read().unwrap().1.clone()
+    }
+
+    fn replace(&self, cert: Certificate) -> Result<(), Error> {
+        let certified = Arc::new(cert.certified_key()?);
+        // UNWRAP: as above
+        *self.current.write().unwrap() = (certified, cert);
         Ok(())
     }
 }
 
-/// Internal implementation detail to avoid orphan-impl errors.
-#[derive(Debug, Clone)]
-struct ConnectionAllower(Arc<dyn AllowConnection>);
-
-impl ServerCertVerifier for ConnectionAllower {
-    fn verify_server_cert(
-        &self,
-        end_entity: &CertificateDer<'_>,
-        _intermediates: &[CertificateDer<'_>],
-        _server_name: &ServerName<'_>,
-        _ocsp_response: &[u8],
-        _now: UnixTime,
-    ) -> Result<ServerCertVerified, rustls::Error> {
-        let cert = ParsedCertificate::try_from(end_entity)?;
-
-        if self.0.check_validity_period() {
-            todo!("check_validity_period");
-        }
-
-        self.0
-            .allow_public_key(cert.subject_public_key_info())
-            .map_err(rustls::Error::from)
-            .and(Ok(ServerCertVerified::assertion()))
-    }
-
-    fn verify_tls12_signature(
-        &self,
-        _message: &[u8],
-        _cert: &CertificateDer<'_>,
-        _dss: &DigitallySignedStruct,
-    ) -> Result<HandshakeSignatureValid, rustls::Error> {
-        unimplemented!("mushi works exclusively over TLS 1.3")
-    }
-
-    fn verify_tls13_signature(
-        &self,
-        message: &[u8],
-        cert: &CertificateDer<'_>,
-        dss: &DigitallySignedStruct,
-    ) -> Result<HandshakeSignatureValid, rustls::Error> {
-        let algos = CryptoProvider::get_default()
-            .expect("a default CryptoProvider must be set")
-            .signature_verification_algorithms;
-        verify_tls13_signature(message, cert, dss, &algos)
-    }
-
-    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
-        CryptoProvider::get_default()
-            .expect("a default CryptoProvider must be set")
-            .signature_verification_algorithms
-            .supported_schemes()
+impl ResolvesServerCert for CertResolver {
+    fn resolve(&self, _hello: ClientHello<'_>) -> Option<Arc<CertifiedKey>> {
+        // UNWRAP: as above
+        Some(self.current.read().unwrap().0.clone())
     }
 }
 
-impl ClientCertVerifier for ConnectionAllower {
-    fn root_hint_subjects(&self) -> &[DistinguishedName] {
-        &[]
-    }
-
-    fn verify_client_cert(
-        &self,
-        end_entity: &CertificateDer<'_>,
-        _intermediates: &[CertificateDer<'_>],
-        _now: UnixTime,
-    ) -> Result<ClientCertVerified, rustls::Error> {
-        let cert = ParsedCertificate::try_from(end_entity)?;
-
-        if self.0.check_validity_period() {
-            todo!("check_validity_period");
-        }
-
-        self.0
-            .allow_public_key(cert.subject_public_key_info())
-            .map_err(rustls::Error::from)
-            .and(Ok(ClientCertVerified::assertion()))
-    }
-
-    fn verify_tls12_signature(
-        &self,
-        _message: &[u8],
-        _cert: &CertificateDer<'_>,
-        _dss: &DigitallySignedStruct,
-    ) -> Result<HandshakeSignatureValid, rustls::Error> {
-        unimplemented!("mushi works exclusively over TLS 1.3")
-    }
-
-    fn verify_tls13_signature(
-        &self,
-        message: &[u8],
-        cert: &CertificateDer<'_>,
-        dss: &DigitallySignedStruct,
-    ) -> Result<HandshakeSignatureValid, rustls::Error> {
-        let algos = CryptoProvider::get_default()
-            .expect("a default CryptoProvider must be set")
-            .signature_verification_algorithms;
-        verify_tls13_signature(message, cert, dss, &algos)
-    }
-
-    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
-        CryptoProvider::get_default()
-            .expect("a default CryptoProvider must be set")
-            .signature_verification_algorithms
-            .supported_schemes()
-    }
-
-    fn client_auth_mandatory(&self) -> bool {
-        self.0.require_client_auth()
-    }
+/// Builds a [`Server`].
+pub struct ServerBuilder {
+    addr: SocketAddr,
+    congestion_controller: Option<Arc<dyn ControllerFactory + Send + Sync + 'static>>,
 }
 
-/// The main entrypoint to create connections to, and accept connections from other Mushi peers.
-///
-/// Generally, an application will have a single endpoint instance. This results in more optimal
-/// network behaviour, and as a single endpoint can have sessions to any number of peers, and each
-/// session supports many concurrent datagrams and streams, there's little need (outside of
-/// testing) for multiple endpoints.
-///
-/// Before creating an endpoint, ensure that a default [`rustls::crypto::CryptoProvider`] has been
-/// installed, preferably using [`install_crypto_provider()`].
-#[derive(Clone)]
-pub struct Endpoint {
-    client_config: quinn::ClientConfig,
-    server: Arc<Mutex<web_transport::Server>>,
-    key: Arc<EndpointKey>,
-    endpoint: quinn::Endpoint,
-}
-
-impl std::fmt::Debug for Endpoint {
+impl std::fmt::Debug for ServerBuilder {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let server = &f
-            .debug_struct("web_transport_quinn::Server")
-            .finish_non_exhaustive()?;
-        f.debug_struct("Endpoint")
-            .field("client_config", &self.client_config)
-            .field("server", &server)
-            .field("key", &self.key)
-            .field("endpoint", &self.endpoint)
+        f.debug_struct("ServerBuilder")
+            .field("addr", &self.addr)
+            .field(
+                "congestion_controller",
+                &self.congestion_controller.as_ref().map(|_| "<factory>"),
+            )
             .finish()
     }
 }
 
-impl Endpoint {
-    /// Create and setup a Mushi peer.
-    ///
-    /// You must provide a local or unspecified address to bind the endpoint to. In most cases,
-    /// `"[::]:0"` suffices: this binds to all IP interfaces and selects a random port. Use
-    /// [`Endpoint::local_addr()`] to discover the randomly-assigned port.
-    ///
-    /// If `bind_to` resolves to multiple socket addresses, the first that succeeds creation of the
-    /// socket will be used.
-    ///
-    /// `allower` is the trust policy for remote peers: incoming (client certificate) and outgoing
-    /// (server certificate) peers will have their public key extracted and checked by the
-    /// [`AllowConnection`] implementation.
-    ///
-    /// `cc` is the congestion control strategy for the QUIC state machine. You can select
-    /// different strategies from [`quinn::congestion`] or elsewhere to optimise for throughput or
-    /// latency, or you can use `None` to select the default strategy (Cubic, aka RFC 8312).
-    ///
-    /// Requires a Tokio runtime, even though the function is not async.
-    pub fn new(
-        bind_to: impl ToSocketAddrs,
-        key: EndpointKey,
-        allower: Arc<dyn AllowConnection>,
-        cc: Option<Arc<(dyn ControllerFactory + Send + Sync + 'static)>>,
-    ) -> Result<Self, Error> {
-        let provider = Arc::new(rustls::crypto::ring::default_provider());
-        let key = Arc::new(key);
-        let allower = Arc::new(ConnectionAllower(allower));
+impl Default for ServerBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
-        let mut server_config = rustls::ServerConfig::builder_with_provider(provider.clone())
-            .with_protocol_versions(&[&rustls::version::TLS13])
-            .unwrap()
-            .with_client_cert_verifier(allower.clone())
-            .with_cert_resolver(key.clone());
-        server_config.alpn_protocols = vec![ALPN.to_vec()];
+impl ServerBuilder {
+    /// Start building a server bound to `[::]:0`.
+    pub fn new() -> Self {
+        Self {
+            addr: SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0),
+            congestion_controller: None,
+        }
+    }
 
-        let mut client_config = rustls::ClientConfig::builder_with_provider(provider.clone())
-            .with_protocol_versions(&[&rustls::version::TLS13])
-            .unwrap()
-            .dangerous()
-            .with_custom_certificate_verifier(allower)
-            .with_client_cert_resolver(key.clone());
-        client_config.alpn_protocols = vec![ALPN.to_vec()];
+    /// Bind to the given address.
+    ///
+    /// `[::]:0` binds every interface on a random port; use [`Server::local_addr`] to find out
+    /// which.
+    pub fn with_addr(mut self, addr: SocketAddr) -> Self {
+        self.addr = addr;
+        self
+    }
+
+    /// Use a particular congestion control strategy.
+    ///
+    /// Pick from [`quinn::congestion`] to trade throughput against latency. Defaults to Cubic
+    /// (RFC 8312).
+    pub fn with_congestion_control(
+        mut self,
+        cc: Arc<dyn ControllerFactory + Send + Sync + 'static>,
+    ) -> Self {
+        self.congestion_controller = Some(cc);
+        self
+    }
+
+    /// Bind the socket and start serving `cert`.
+    pub fn with_certificate(self, cert: Certificate) -> Result<Server, Error> {
+        let provider = crypto::default_provider();
+        let resolver = Arc::new(CertResolver {
+            current: RwLock::new((Arc::new(cert.certified_key()?), cert)),
+        });
+
+        let mut tls = rustls::ServerConfig::builder_with_provider(provider)
+            .with_protocol_versions(&[&rustls::version::TLS13])?
+            .with_no_client_auth()
+            .with_cert_resolver(resolver.clone());
+        tls.alpn_protocols = vec![ALPN.as_bytes().to_vec()];
 
         if cfg!(debug_assertions) {
-            server_config.key_log = Arc::new(KeyLogFile::new());
-            client_config.key_log = server_config.key_log.clone();
+            tls.key_log = Arc::new(KeyLogFile::new());
         }
 
         let mut transport = quinn::TransportConfig::default();
-        if let Some(cc) = cc {
-            transport.congestion_controller_factory(cc.clone());
+        if let Some(cc) = self.congestion_controller {
+            transport.congestion_controller_factory(cc);
         }
-        let transport = Arc::new(transport);
 
-        let mut server_config = quinn::ServerConfig::with_crypto(Arc::new(
-            QuicServerConfig::try_from(server_config).unwrap(),
-        ));
-        server_config.transport_config(transport.clone());
+        let mut config =
+            quinn::ServerConfig::with_crypto(Arc::new(QuicServerConfig::try_from(tls)?));
+        config.transport_config(Arc::new(transport));
 
-        let mut client_config =
-            quinn::ClientConfig::new(Arc::new(QuicClientConfig::try_from(client_config).unwrap()));
-        client_config.transport_config(transport);
+        let endpoint = quinn::Endpoint::server(config, self.addr)?;
 
-        let mut last_err = None;
-        let mut endpoint = None;
-        for addr in bind_to.to_socket_addrs()? {
-            match quinn::Endpoint::server(server_config.clone(), addr) {
-                Ok(s) => {
-                    endpoint = Some(s);
-                    break;
-                }
-                Err(err) => {
-                    last_err = Some(err);
-                }
-            }
-        }
-        let mut endpoint = match (endpoint, last_err) {
-            (Some(e), _) => e,
-            (None, Some(err)) => return Err(err.into()),
-            (None, None) => return Err(Error::NoAddrs),
-        };
-        endpoint.set_default_client_config(client_config.clone());
-
-        Ok(Self {
-            key,
-            client_config,
-            server: Arc::new(Mutex::new(web_transport::Server::new(endpoint.clone()))),
+        Ok(Server {
+            inner: Arc::new(Mutex::new(web_transport::Server::new(endpoint.clone()))),
             endpoint,
+            resolver,
         })
     }
+}
 
-    /// Get the local address the underlying socket is bound to.
+/// A Mushi server, accepting WebTransport sessions from browsers.
+///
+/// Can be cloned to get multiple handles to the same socket. Accepting is serialised across
+/// clones, so only one call to [`Server::accept`] makes progress at a time.
+#[derive(Clone)]
+pub struct Server {
+    inner: Arc<Mutex<web_transport::Server>>,
+    endpoint: quinn::Endpoint,
+    resolver: Arc<CertResolver>,
+}
+
+impl std::fmt::Debug for Server {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Server")
+            .field("endpoint", &self.endpoint)
+            .field("cert", &self.resolver.certificate())
+            .finish_non_exhaustive()
+    }
+}
+
+impl Server {
+    /// Start building a server.
+    pub fn builder() -> ServerBuilder {
+        ServerBuilder::new()
+    }
+
+    /// Accept an incoming session request.
+    ///
+    /// Returns `None` once the server is closed. The request is not yet a session: inspect it and
+    /// then call [`Request::ok`] or [`Request::reject`].
+    pub async fn accept(&self) -> Option<Request> {
+        self.inner
+            .lock()
+            .await
+            .accept()
+            .await
+            .map(|inner| Request { inner })
+    }
+
+    /// The certificate currently being served.
+    pub fn certificate(&self) -> Certificate {
+        self.resolver.certificate()
+    }
+
+    /// Replace the certificate served to new connections.
+    ///
+    /// Existing sessions are untouched. Publish the new hash *before* calling this, and keep
+    /// publishing the old one until every browser has had a chance to pick up the change —
+    /// `serverCertificateHashes` accepts a list precisely so the overlap is seamless.
+    pub fn set_certificate(&self, cert: Certificate) -> Result<(), Error> {
+        self.resolver.replace(cert)
+    }
+
+    /// The local address the underlying socket is bound to.
     pub fn local_addr(&self) -> Result<SocketAddr, Error> {
         self.endpoint.local_addr().map_err(Error::from)
     }
 
-    /// Get the number of connections (≈sessions) that are currently open.
+    /// The number of connections (≈sessions) currently open.
     pub fn open_connections(&self) -> usize {
         self.endpoint.open_connections()
     }
 
-    /// Get QUIC activity stats.
+    /// QUIC activity stats.
     pub fn stats(&self) -> quinn::EndpointStats {
         self.endpoint.stats()
     }
 
-    /// Connect to a peer.
-    pub async fn connect(&self, addrs: impl ToSocketAddrs) -> Result<Session, Error> {
-        let mut last_err = None;
-        for mut addr in addrs.to_socket_addrs()? {
-            if addr.ip().is_unspecified() {
-                addr.set_ip(match addr.ip() {
-                    IpAddr::V4(_) => Ipv4Addr::LOCALHOST.into(),
-                    IpAddr::V6(_) => Ipv6Addr::LOCALHOST.into(),
-                });
-            }
-            let url = Url::parse(&format!("https://{addr}")).unwrap();
-            let conn =
-                self.endpoint
-                    .connect_with(self.client_config.clone(), addr, "mushi.mushi")?;
-            let conn = conn.await?;
-
-            match web_transport::Session::connect(conn, &url).await {
-                Ok(s) => return Ok(Session::new(s)),
-                Err(e) => last_err = Some(Error::from(e)),
-            }
-        }
-
-        Err(last_err.unwrap_or(Error::NoAddrs))
-    }
-
-    /// Accept an incoming session.
-    pub async fn accept(&self) -> Option<Result<Session, Error>> {
-        match self.server.lock().await.accept().await {
-            Some(session) => Some(
-                session
-                    .ok()
-                    .await
-                    .map(Session::new)
-                    .map_err(|e| Error::Write(e.into())),
-            ),
-            None => None,
-        }
-    }
-
-    /// Key used by this endpoint.
-    pub fn key(&self) -> Arc<KeyPair> {
-        self.key.key.clone()
-    }
-
-    /// Wait for all sessions on the endpoint to be cleanly shut down.
+    /// Wait for all sessions to be cleanly shut down.
     ///
-    /// Waiting for this condition before exiting ensures that a good-faith effort is made to notify
-    /// peers of recent session closes, whereas exiting immediately could force them to wait out
-    /// the idle timeout period.
-    ///
-    /// Does not proactively close existing sessions or cause incoming sessions to be
-    /// rejected. Consider calling [`Endpoint::close()`] if that is desired.
+    /// Waiting before exiting makes a good-faith effort to notify peers, where exiting immediately
+    /// would force them to wait out the idle timeout. Does not close anything itself; see
+    /// [`Server::close`].
     pub async fn wait_idle(&self) {
         self.endpoint.wait_idle().await
     }
 
     /// Close all sessions immediately.
     ///
-    /// Pending operations will fail immediately with `Connection(ConnectionError::LocallyClosed)`.
-    /// No more data is sent to the peers beyond a `CONNECTION_CLOSE` frame, and the peers may drop
-    /// buffered data upon receiving the `CONNECTION_CLOSE` frame.
-    ///
-    /// `code` and `reason` are not interpreted, and are provided directly to the peers.
-    ///
-    /// `reason` will be truncated to fit in a single packet with overhead; to improve odds that it
-    /// is preserved in full, it should be kept under 1KiB.
-    ///
-    /// See the notes on [`Session::close()`] for more information.
+    /// Pending operations fail at once, and nothing is sent beyond a `CONNECTION_CLOSE` frame, so
+    /// peers may drop data they had buffered. See [`Session::close`].
     pub fn close(&self, code: u32, reason: impl AsRef<[u8]>) {
         self.endpoint.close(
-            // UNWRAP: VarInt is u64 internally, so the conversion is always valid
+            // UNWRAP: VarInt is a u64 internally, so this conversion always succeeds
             web_transport_proto::error_to_http3(code)
                 .try_into()
                 .unwrap(),
@@ -634,171 +594,185 @@ impl Endpoint {
     }
 }
 
-/// A Session, able to accept/create streams and send/recv datagrams.
+/// An incoming session, awaiting a decision.
 ///
-/// Can be cloned to create multiple handles to the same underlying connection.
+/// This is where you route and authorise. The browser controls very little of the handshake: it
+/// cannot set request headers, and WebTransport does not send cookies. In practice the **URL path
+/// is the only channel it has**, so it carries both the protocol selection and any token you
+/// authenticate with. The [`Origin`](Request::origin) header is set by the browser itself and is
+/// worth checking too.
+pub struct Request {
+    inner: web_transport::Request,
+}
+
+impl std::fmt::Debug for Request {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Request")
+            .field("url", self.url())
+            .field("protocols", &self.protocols())
+            .field("remote_address", &self.remote_address())
+            .finish_non_exhaustive()
+    }
+}
+
+impl Request {
+    /// The full URL the browser connected to.
+    pub fn url(&self) -> &Url {
+        &self.inner.url
+    }
+
+    /// The path component of the URL.
+    pub fn path(&self) -> &str {
+        self.inner.url.path()
+    }
+
+    /// The `Origin` header, as set by the browser.
+    ///
+    /// Absent for non-browser clients, which can claim any origin they like — this identifies the
+    /// page, and is not on its own an authentication.
+    pub fn origin(&self) -> Option<&str> {
+        self.inner
+            .headers
+            .get(http::header::ORIGIN)
+            .and_then(|v| v.to_str().ok())
+    }
+
+    /// The subprotocols the client offered, in preference order.
+    ///
+    /// Not supported by every browser — Firefox doesn't implement subprotocol negotiation — so
+    /// treat this as a hint and select on [`Request::path`] instead.
+    pub fn protocols(&self) -> &[String] {
+        &self.inner.protocols
+    }
+
+    /// The raw HTTP/3 headers of the CONNECT request.
+    pub fn headers(&self) -> &http::HeaderMap {
+        &self.inner.headers
+    }
+
+    /// The address the client is connecting from.
+    pub fn remote_address(&self) -> SocketAddr {
+        self.inner.conn().remote_address()
+    }
+
+    /// Accept the session.
+    pub async fn ok(self) -> Result<Session, Error> {
+        Ok(Session {
+            inner: self.inner.ok().await?,
+        })
+    }
+
+    /// Accept the session, selecting one of the offered subprotocols.
+    ///
+    /// The protocol must be one the client offered. Clients that don't support negotiation ignore
+    /// this.
+    pub async fn ok_with_protocol(self, protocol: &str) -> Result<Session, Error> {
+        let response = web_transport_proto::ConnectResponse::OK.with_protocol(protocol);
+        Ok(Session {
+            inner: self.inner.respond(response).await?,
+        })
+    }
+
+    /// Reject the session with an HTTP status code.
+    pub async fn reject(self, status: StatusCode) -> Result<(), Error> {
+        self.inner.reject(status).await?;
+        Ok(())
+    }
+}
+
+/// An established session, able to open streams and send datagrams.
 ///
-/// If all references to a connection (including every clone of the `Session` handle, streams of
-/// incoming streams, and the various stream types) have been dropped, then the session will be
-/// automatically closed with a `code` of 0 and an empty reason. You can also close the session
-/// explicitly by calling [`Session::close()`].
-///
-/// Closing the session immediately immediately sends a `CONNECTION_CLOSE` frame and then abandons
-/// efforts to deliver data to the peer. Upon receiving `CONNECTION_CLOSE` the peer may drop any
-/// stream data not yet delivered to the application. [`Session::close()`] describes in more detail
-/// how to gracefully close a session without losing application data.
+/// Can be cloned to get multiple handles to the same connection. Once every handle is dropped the
+/// session closes with code 0; close it explicitly with [`Session::close`] to say more.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Session {
     inner: web_transport::Session,
-    peer_key: Option<SubjectPublicKeyInfoDer<'static>>,
 }
 
 impl Session {
-    fn new(session: web_transport::Session) -> Self {
-        let peer_key = session.peer_identity().and_then(|id| {
-            let certs: Vec<CertificateDer> = *id.downcast().ok()?;
-            for cert in certs {
-                let Ok(cert) = ParsedCertificate::try_from(&cert) else {
-                    continue;
-                };
-                return Some(cert.subject_public_key_info());
-            }
-
-            None
-        });
-
-        Self {
-            inner: session,
-            peer_key,
-        }
+    /// The subprotocol negotiated for this session, if any.
+    pub fn protocol(&self) -> Option<&str> {
+        self.inner.protocol()
     }
 
-    /// The public key of the remote peer.
-    ///
-    /// This may be unavailable if `require_client_auth` returned `false` in the Endpoint's
-    /// [`AllowConnection`] instance.
-    pub fn peer_key(&self) -> Option<&SubjectPublicKeyInfoDer<'_>> {
-        self.peer_key.as_ref()
-    }
-
-    /// Get access to the underlying QUIC Connection.
+    /// Access the underlying QUIC connection.
     ///
     /// # Safety
     ///
-    /// You must not use any methods that alter the session state, nor any that send packets.
-    /// This may corrupt the WebTransport state layered on top.
-    ///
-    /// Accessing statistical and factual information (such as `peer_identity()`,
-    /// `remote_address()`, `stats()`, `close_reason()`, etc) is safe.
+    /// You must not call anything that alters session state or sends packets; that would corrupt
+    /// the WebTransport layer above. Reading statistics (`remote_address()`, `stats()`,
+    /// `close_reason()`, and so on) is safe.
     pub unsafe fn as_quic(&self) -> &quinn::Connection {
         &self.inner
     }
 
-    /// Wait until the peer creates a new unidirectional stream.
-    ///
-    /// Will error if the connection is closed.
+    /// Wait for the peer to open a unidirectional stream.
     pub async fn accept_uni(&self) -> Result<RecvStream, Error> {
-        let inner = self.inner.clone();
-        let stream = inner.accept_uni().await?;
-        Ok(RecvStream::new(stream))
+        Ok(RecvStream::new(self.inner.accept_uni().await?))
     }
 
-    /// Wait until the peer creates a new bidirectional stream.
+    /// Wait for the peer to open a bidirectional stream.
     pub async fn accept_bi(&self) -> Result<(SendStream, RecvStream), Error> {
         let (s, r) = self.inner.accept_bi().await?;
         Ok((SendStream::new(s), RecvStream::new(r)))
     }
 
-    /// Open a new bidirectional stream.
+    /// Open a bidirectional stream.
     ///
     /// May wait when there are too many concurrent streams.
     pub async fn open_bi(&self) -> Result<(SendStream, RecvStream), Error> {
-        let inner = self.inner.clone();
-        Ok(inner
-            .open_bi()
-            .await
-            .map(|(s, r)| (SendStream::new(s), RecvStream::new(r)))?)
+        let (s, r) = self.inner.open_bi().await?;
+        Ok((SendStream::new(s), RecvStream::new(r)))
     }
 
-    /// Open a new unidirectional stream.
+    /// Open a unidirectional stream.
     ///
-    /// May wait when there are too many concurrent streams.
+    /// May wait when there are too many concurrent streams. Note that WebTransport is symmetric
+    /// once established: the server can push to the browser without being asked.
     pub async fn open_uni(&self) -> Result<SendStream, Error> {
-        let inner = self.inner.clone();
-        Ok(inner.open_uni().await.map(SendStream::new)?)
+        Ok(SendStream::new(self.inner.open_uni().await?))
     }
 
-    /// Send an unreliable datagram over the network.
+    /// Send an unreliable datagram.
     ///
-    /// QUIC datagrams may be dropped for any reason, including (non-exhaustive):
-    /// - Network congestion
-    /// - Random packet loss
-    /// - Payload is larger than `max_datagram_size()`
-    /// - Peer is not receiving datagrams
-    /// - Peer has too many outstanding datagrams
+    /// Datagrams may be dropped for any reason, including congestion, packet loss, exceeding
+    /// [`Session::max_datagram_size`], or the peer not reading them.
     pub fn send_datagram(&self, payload: Bytes) -> Result<(), Error> {
-        let inner = self.inner.clone();
-        Ok(inner.send_datagram(payload)?)
+        Ok(self.inner.send_datagram(payload)?)
     }
 
-    /// The maximum size of a datagram that can be sent.
-    pub async fn max_datagram_size(&self) -> usize {
+    /// The largest datagram that can be sent.
+    pub fn max_datagram_size(&self) -> usize {
         self.inner.max_datagram_size()
     }
 
-    /// Receive a datagram over the network.
+    /// Receive a datagram.
     pub async fn recv_datagram(&self) -> Result<Bytes, Error> {
-        let inner = self.inner.clone();
-        Ok(inner.read_datagram().await?)
+        Ok(self.inner.read_datagram().await?)
     }
 
     /// Close the session immediately.
     ///
-    /// Pending operations will fail immediately with `Connection(ConnectionError::LocallyClosed)`.
-    /// No more data is sent to the peer beyond a `CONNECTION_CLOSE` frame, and the peer may drop
-    /// buffered data upon receiving the `CONNECTION_CLOSE` frame.
+    /// Pending operations fail at once. Nothing is sent beyond a `CONNECTION_CLOSE` frame, and the
+    /// peer may drop stream data it hasn't yet handed to its application — including data it
+    /// already acknowledged. `reason` is truncated to fit a single packet, so keep it under 1KiB.
     ///
-    /// `code` and `reason` are not interpreted, and are provided directly to the peer.
-    ///
-    /// `reason` will be truncated to fit in a single packet with overhead; to improve odds that it
-    /// is preserved in full, it should be kept under 1KiB.
-    ///
-    /// # Gracefully closing a session
-    ///
-    /// Only the peer last receiving application data can be certain that all data is delivered.
-    /// The only reliable action it can then take is to close the session, potentially with a
-    /// custom error code. The delivery of the final `CONNECTION_CLOSE` frame is very likely if
-    /// both endpoints stay online long enough, and [`Endpoint::wait_idle()`] can be used to
-    /// provide sufficient time. Otherwise, the remote peer will time out the session after 30
-    /// seconds.
-    ///
-    /// The sending side can not guarantee all stream data is delivered to the remote application.
-    /// It only knows the data is delivered to the QUIC stack of the remote endpoint. Once the
-    /// local side sends a `CONNECTION_CLOSE` frame, the remote endpoint may drop any data it
-    /// received but is as yet undelivered to the application, including data that was acknowledged
-    /// as received to the local endpoint.
+    /// Only the peer that received data last can know it all arrived. To close gracefully, have
+    /// that side call this, and give the frame time to arrive with [`Server::wait_idle`];
+    /// otherwise the peer times the session out after 30 seconds.
     pub fn close(&self, code: u32, reason: impl AsRef<[u8]>) {
-        let inner = self.inner.clone();
-        inner.close(code, reason.as_ref())
+        self.inner.close(code, reason.as_ref())
     }
 
-    /// Wait until the connection is closed.
-    ///
-    /// Returns `Ok(None)` if the connection was closed locally, `Ok(Some(_))` if the connection
-    /// was closed by a peer (e.g. with `close()`), and `Err(_)` for other unexpected reasons.
-    pub async fn closed(&self) -> Result<Option<ApplicationClose>, Error> {
-        match self.inner.closed().await {
-            SessionError::ConnectionError(ConnectionError::LocallyClosed) => Ok(None),
-            SessionError::ConnectionError(ConnectionError::ApplicationClosed(ac)) => Ok(Some(ac)),
-            e => Err(Error::Session(e)),
-        }
+    /// Wait until the session is closed, and report why.
+    pub async fn closed(&self) -> Error {
+        Error::Session(self.inner.closed().await)
     }
 }
 
-/// An outgoing stream of bytes to the peer.
+/// An outgoing stream of bytes.
 ///
-/// QUIC streams have flow control, which means the send rate is limited by the peer's receive
-/// window. The stream will be closed with a graceful FIN when dropped.
+/// Flow controlled by the peer's receive window. Closed with a graceful FIN when dropped.
 #[derive(Debug)]
 pub struct SendStream {
     inner: web_transport::SendStream,
@@ -809,15 +783,15 @@ impl SendStream {
         Self { inner }
     }
 
-    /// Write *all* of the buffer to the stream.
+    /// Write the whole buffer to the stream.
     pub async fn write(&mut self, buf: &[u8]) -> Result<(), Error> {
         self.inner.write_all(buf).await?;
         Ok(())
     }
 
-    /// Write the given buffer to the stream, advancing the internal position.
+    /// Write a buffer to the stream, advancing its internal position.
     ///
-    /// This may be polled to perform partial writes.
+    /// May be polled to perform partial writes.
     pub async fn write_buf<B: Buf>(&mut self, buf: &mut B) -> Result<(), Error> {
         while buf.has_remaining() {
             let size = self.inner.write(buf.chunk()).await?;
@@ -827,24 +801,28 @@ impl SendStream {
         Ok(())
     }
 
+    /// Finish the stream cleanly, signalling there's nothing more to send.
+    pub fn finish(&mut self) -> Result<(), Error> {
+        self.inner.finish()?;
+        Ok(())
+    }
+
     /// Set the stream's priority.
     ///
-    /// Streams with lower values will be sent first, but are not guaranteed to arrive first.
+    /// Lower values are sent first, though they aren't guaranteed to arrive first.
     pub fn set_priority(&mut self, order: i32) {
         self.inner.set_priority(order).ok();
     }
 
-    /// Send an immediate reset code, closing the stream.
+    /// Reset the stream immediately, closing it with an error code.
     pub fn reset(&mut self, code: u32) {
         self.inner.reset(code).ok();
     }
 }
 
-/// An incoming stream of bytes from the peer.
+/// An incoming stream of bytes.
 ///
-/// All bytes are flushed in order and the stream is flow controlled.
-///
-/// The stream will be closed with STOP_SENDING code=0 when dropped.
+/// Bytes arrive in order and are flow controlled. Closed with `STOP_SENDING` code 0 when dropped.
 #[derive(Debug)]
 pub struct RecvStream {
     inner: web_transport::RecvStream,
@@ -855,9 +833,10 @@ impl RecvStream {
         Self { inner }
     }
 
-    /// Read the next chunk of data with the provided maximum size.
+    /// Read the next chunk of data, up to `max` bytes.
     ///
-    /// This returns a chunk of data instead of copying, which may be more efficient.
+    /// Returns a chunk rather than copying, which may be more efficient. `None` means the stream
+    /// has finished.
     pub async fn read(&mut self, max: usize) -> Result<Option<Bytes>, Error> {
         Ok(self
             .inner
@@ -866,11 +845,9 @@ impl RecvStream {
             .map(|chunk| chunk.bytes))
     }
 
-    /// Read some data into the provided buffer.
+    /// Read into the provided buffer, advancing it by the number of bytes read.
     ///
-    /// The number of bytes read is returned, or None if the stream is closed.
-    ///
-    /// The buffer will be advanced by the number of bytes read.
+    /// Returns the number of bytes read, or `None` if the stream has finished.
     pub async fn read_buf<B: BufMut>(&mut self, buf: &mut B) -> Result<Option<usize>, Error> {
         let dst = buf.chunk_mut();
         let dst = unsafe { &mut *(dst as *mut _ as *mut [u8]) };
@@ -885,16 +862,13 @@ impl RecvStream {
         Ok(Some(size))
     }
 
-    /// Send a `STOP_SENDING` QUIC code.
+    /// Send a `STOP_SENDING` code, asking the peer to stop writing.
     pub fn stop(&mut self, code: u32) {
         self.inner.stop(code).ok();
     }
 }
 
 /// A Mushi error.
-///
-/// Mostly these are transport errors; at connection startup you may also encounter I/O and
-/// addressing errors.
 #[derive(Debug, thiserror::Error)]
 #[allow(missing_docs)]
 pub enum Error {
@@ -904,14 +878,8 @@ pub enum Error {
     #[error("session error: {0}")]
     Session(#[from] web_transport::SessionError),
 
-    #[error("client error: {0}")]
-    Client(#[from] web_transport::ClientError),
-
-    #[error("connect error: {0}")]
-    Connect(#[from] quinn::ConnectError),
-
-    #[error("connect error: {0}")]
-    Connection(#[from] quinn::ConnectionError),
+    #[error("server error: {0}")]
+    Server(#[from] web_transport::ServerError),
 
     #[error("write error: {0}")]
     Write(web_transport::WriteError),
@@ -919,8 +887,23 @@ pub enum Error {
     #[error("read error: {0}")]
     Read(web_transport::ReadError),
 
-    #[error("no addresses found")]
-    NoAddrs,
+    #[error("certificate error: {0}")]
+    Rcgen(#[from] rcgen::Error),
+
+    #[error("tls error: {0}")]
+    Tls(#[from] rustls::Error),
+
+    #[error("tls suite error: {0}")]
+    NoInitialCipherSuite(#[from] quinn::crypto::rustls::NoInitialCipherSuite),
+
+    #[error("key is not usable with any supported signature scheme")]
+    UnsupportedKey,
+
+    #[error("validity of {0} is too long: browsers require under {MAX_VALIDITY}")]
+    ValidityTooLong(Duration),
+
+    #[error("validity of {0} is not positive")]
+    ValidityTooShort(Duration),
 }
 
 impl From<web_transport::WriteError> for Error {
@@ -931,11 +914,18 @@ impl From<web_transport::WriteError> for Error {
         }
     }
 }
+
 impl From<web_transport::ReadError> for Error {
     fn from(e: web_transport::ReadError) -> Self {
         match e {
             web_transport::ReadError::SessionError(e) => Error::Session(e),
             e => Error::Read(e),
         }
+    }
+}
+
+impl From<web_transport::ClosedStream> for Error {
+    fn from(_: web_transport::ClosedStream) -> Self {
+        Error::Write(web_transport::WriteError::ClosedStream)
     }
 }
