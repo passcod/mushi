@@ -278,3 +278,76 @@ async fn exchanges_datagrams_and_streams() {
 
     task.abort();
 }
+
+#[tokio::test]
+async fn a_rotation_overlap_is_seamless_for_a_browser_holding_both_hashes() {
+    *SETUP;
+
+    let (server, first) = server();
+    let target = url(&server, "/");
+    let rotation = server.rotation().clone();
+
+    let second = Identity::generate()
+        .unwrap()
+        .issue(DEFAULT_VALIDITY)
+        .unwrap();
+    rotation.stage(second.clone()).unwrap();
+
+    let (task, mut sessions) = serve(server);
+
+    // A page that fetched the published set now holds both hashes.
+    let both = [&first, &second];
+
+    // Still serving the first, so that is what matches.
+    client_pinning(&both).connect(target.clone()).await.unwrap();
+    sessions.recv().await.unwrap();
+
+    rotation.promote().unwrap();
+
+    // Now serving the second — the same page connects without refetching anything.
+    client_pinning(&both).connect(target.clone()).await.unwrap();
+    sessions.recv().await.unwrap();
+
+    // A page holding only the pre-rotation snapshot cannot, which is why the previous hash stays
+    // published until it has had time to propagate.
+    client_pinning(&[&first])
+        .connect(target.clone())
+        .await
+        .unwrap_err();
+
+    // And one holding only the post-rotation snapshot can.
+    client_pinning(&[&second]).connect(target).await.unwrap();
+    sessions.recv().await.unwrap();
+
+    task.abort();
+}
+
+#[tokio::test]
+async fn a_reloaded_certificate_serves_the_hash_that_was_already_published() {
+    *SETUP;
+
+    let original = Identity::generate()
+        .unwrap()
+        .issue(DEFAULT_VALIDITY)
+        .unwrap();
+    let published = original.hash().clone();
+
+    // Simulate a restart: all the device kept was the PEM pair on disk.
+    let reloaded =
+        Certificate::from_pem(&original.to_pem(), &original.key_pem()).unwrap();
+    drop(original);
+
+    let server = Server::builder()
+        .with_addr("127.0.0.1:0".parse().unwrap())
+        .with_certificate(reloaded.clone())
+        .unwrap();
+    let target = url(&server, "/");
+    let (task, mut sessions) = serve(server);
+
+    // The hash published before the restart still matches, so the device is reachable at once.
+    assert_eq!(reloaded.hash(), &published);
+    client_pinning(&[&reloaded]).connect(target).await.unwrap();
+    sessions.recv().await.unwrap();
+
+    task.abort();
+}

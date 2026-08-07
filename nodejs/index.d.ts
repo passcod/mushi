@@ -88,6 +88,122 @@ export declare class Certificate {
   get notAfter(): number
   /** Whether a browser could accept this certificate right now. */
   get isBrowserValid(): boolean
+  /**
+   * The certificate as PEM, for storing across restarts.
+   *
+   * Persisting matters more than it looks: the hash covers the certificate, not the key, so a
+   * device that reissues on boot comes back with a hash nobody has published yet. It is then
+   * unreachable until it republishes *and* that propagates — and it can't even do that if the
+   * backchannel happens to be down.
+   *
+   * Store `keyPem` alongside this; both are needed to reload.
+   */
+  toPem(): string
+  /** The private key as PEM. Secret material. */
+  get keyPem(): string
+  /**
+   * Reload a stored certificate and its key.
+   *
+   * Validity is read back out of the certificate, so a reloaded certificate reports the same
+   * `notAfter` and `isBrowserValid` as a freshly issued one.
+   *
+   * This is also how to adopt a certificate issued elsewhere — if your backend mints
+   * certificates and provisions them to devices, it already knows the hash before the device
+   * does, and there is nothing to report back.
+   */
+  static fromPem(certPem: string, keyPem: string): Certificate
+  /** When rotation should begin: `leadSeconds` before expiry, in milliseconds since the epoch. */
+  renewAt(leadSeconds: number): number
+  /** Whether `renewAt` has passed. */
+  needsRenewal(leadSeconds: number): boolean
+}
+/**
+ * The certificates a server is serving, publishing, and retiring.
+ *
+ * A server serves exactly one certificate at a time — nothing in the handshake says which hash
+ * the browser pinned, so it can't choose per-connection. The overlap that makes rotation seamless
+ * therefore lives entirely in *publication*: a browser accepts a list, so both hashes must be in
+ * what your backend serves **before** the served certificate changes underneath it.
+ *
+ * So there are three slots. `stage()` makes a certificate publishable without serving it;
+ * `promote()` starts serving it once you know the hash is out there. The one it displaces stays
+ * published as `previous`, so a rollback or a stale snapshot still connects, until you
+ * `retirePrevious()`.
+ *
+ * Nothing here runs on a timer. Mushi can't see your backchannel, so it can't know whether a
+ * publication landed. You drive it; `retirePreviousAt()` and `certificate.needsRenewal()` tell
+ * you when.
+ *
+ * ```js
+ * rotation.stage(identity.issue());
+ * await publish(rotation.publishedSri); // only proceed once this is confirmed
+ * rotation.promote();
+ * ```
+ */
+export declare class Rotation {
+  /** The certificate being served. */
+  get current(): Certificate
+  /** The certificate queued to be served next, if any. */
+  get staged(): Certificate | null
+  /** The certificate most recently displaced, still published, if any. */
+  get previous(): Certificate | null
+  /**
+   * Every hash that should currently be published, as one SRI string.
+   *
+   * This is the whole payload your backchannel needs to carry.
+   */
+  get publishedSri(): string
+  /**
+   * Queue a certificate to be served next.
+   *
+   * It is published from this point but **not** served: call `promote()` once you know the hash
+   * has reached the browsers. Staging again replaces whatever was staged before.
+   */
+  stage(next: Certificate): void
+  /**
+   * Serve the staged certificate.
+   *
+   * The one it displaces becomes `previous` and stays published until `retirePrevious()`.
+   * Throws if nothing is staged.
+   */
+  promote(): Certificate
+  /**
+   * Serve a certificate immediately, with no staging step.
+   *
+   * Only correct when the hash is *already* published — typically because your backend issued
+   * the certificate and so knew its hash before the device did. Otherwise use `stage()` and
+   * `promote()`, which enforce the ordering.
+   */
+  replace(cert: Certificate): void
+  /**
+   * The earliest time it is safe to stop publishing the previous certificate, in milliseconds
+   * since the epoch, or null when there is nothing to retire.
+   *
+   * That is `propagationSeconds` after it was displaced: your backend's cache lifetime, plus
+   * however long a loaded page may sit on a snapshot before reconnecting. Mushi can't see any
+   * of that, which is why this computes a deadline rather than acting on one.
+   */
+  retirePreviousAt(propagationSeconds: number): number | null
+  /**
+   * Stop publishing the previous certificate.
+   *
+   * Returns it, or null if there wasn't one. Retiring early strands any browser still holding a
+   * snapshot from before the promotion, so consult `retirePreviousAt()` first.
+   */
+  retirePrevious(): Certificate | null
+  /**
+   * Retire the previous certificate if `retirePreviousAt()` has passed.
+   *
+   * The whole of the manual dance in one call, for a loop that ticks periodically.
+   */
+  retirePreviousIfDue(propagationSeconds: number): Certificate | null
+  /**
+   * Wait for the published set to change, and return the new SRI string.
+   *
+   * Changes on every staging, promotion, and retirement, wherever they happen — so a single
+   * waiter sees everything. Use this to drive publication reactively rather than polling.
+   */
+  changed(): Promise<string>
 }
 /**
  * A Mushi server, accepting WebTransport sessions from browsers.
@@ -118,6 +234,12 @@ export declare class Server {
   get stats(): ServerStats
   /** The certificate currently being served. */
   get certificate(): Certificate
+  /**
+   * The certificates this server is serving, publishing, and retiring.
+   *
+   * This is where rotation happens. See `Rotation`.
+   */
+  get rotation(): Rotation
   /**
    * Replace the certificate served to new connections.
    *

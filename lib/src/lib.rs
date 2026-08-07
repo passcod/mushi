@@ -66,7 +66,7 @@ use std::{
     sync::{Arc, RwLock},
 };
 
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, watch};
 
 pub use http::StatusCode;
 pub use rcgen;
@@ -85,7 +85,7 @@ use quinn::{congestion::ControllerFactory, crypto::rustls::QuicServerConfig};
 use rcgen::{CertificateParams, DistinguishedName as Dn, DnType, KeyPair};
 use rustls::{
     KeyLogFile, SignatureScheme,
-    pki_types::{CertificateDer, PrivateKeyDer},
+    pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject},
     server::{ClientHello, ResolvesServerCert},
     sign::CertifiedKey,
 };
@@ -238,6 +238,19 @@ impl Identity {
             not_after,
         })
     }
+}
+
+/// Encode DER as PEM, 64 characters to a line as the format requires.
+fn pem_encode(label: &str, der: &[u8]) -> String {
+    let body = BASE64.encode(der);
+    let mut out = format!("-----BEGIN {label}-----\n");
+    for line in body.as_bytes().chunks(64) {
+        // UNWRAP: base64 output is ASCII, so every chunk is valid UTF-8
+        out.push_str(std::str::from_utf8(line).unwrap());
+        out.push('\n');
+    }
+    out.push_str(&format!("-----END {label}-----\n"));
+    out
 }
 
 /// The hash of a certificate, as the browser expects it.
@@ -426,6 +439,84 @@ impl Certificate {
         BROWSER_SIGSCHEMES.contains(&self.scheme) && self.is_valid_at(OffsetDateTime::now_utc())
     }
 
+    /// The certificate as PEM, for storing across restarts.
+    ///
+    /// Persisting matters more than it looks: the hash covers the certificate, not the key, so a
+    /// device that reissues on boot comes back with a hash nobody has published yet. It is then
+    /// unreachable until it republishes *and* that propagates — and it can't even do that if the
+    /// backchannel happens to be down. A device that reloads the certificate it was already
+    /// serving is reachable immediately and can republish at leisure.
+    ///
+    /// Store [`Certificate::key_pem`] alongside this; both are needed to reload.
+    pub fn to_pem(&self) -> String {
+        pem_encode("CERTIFICATE", &self.der)
+    }
+
+    /// The private key as PEM.
+    ///
+    /// This is secret material. It is the counterpart to [`Certificate::to_pem`] and both are
+    /// needed by [`Certificate::from_pem`].
+    pub fn key_pem(&self) -> String {
+        self.key.serialize_pem()
+    }
+
+    /// Reload a stored certificate and its key.
+    ///
+    /// Validity is read back out of the certificate, so [`Certificate::not_after`] and
+    /// [`Certificate::is_browser_valid`] mean the same thing for a reloaded certificate as for a
+    /// freshly issued one.
+    ///
+    /// This is also how to adopt a certificate issued elsewhere — if your backend mints
+    /// certificates and provisions them to devices, it already knows the hash before the device
+    /// does, and there is nothing to report back.
+    pub fn from_pem(cert_pem: &str, key_pem: &str) -> Result<Self, Error> {
+        let der = CertificateDer::from_pem_slice(cert_pem.as_bytes())
+            .map_err(|e| Error::MalformedCertificate(e.to_string()))?;
+
+        let key = KeyPair::from_pem(key_pem)?;
+        let scheme = BROWSER_SIGSCHEMES
+            .iter()
+            .copied()
+            .find(|(_, alg)| key.is_compatible(alg))
+            .ok_or(Error::UnsupportedKey)?;
+
+        let (_, parsed) = x509_parser::parse_x509_certificate(&der)
+            .map_err(|e| Error::MalformedCertificate(e.to_string()))?;
+        let not_before = parsed.validity().not_before.to_datetime();
+        let not_after = parsed.validity().not_after.to_datetime();
+
+        let hash = CertHash::of(&der);
+        Ok(Self {
+            der,
+            key: Arc::new(key),
+            scheme,
+            hash,
+            not_before,
+            not_after,
+        })
+    }
+
+    /// When rotation should begin: `lead` before expiry.
+    ///
+    /// `lead` needs to cover issuing, publishing, and waiting for that to propagate, with room to
+    /// retry if the backchannel is down. Erring long costs nothing.
+    pub fn renew_at(&self, lead: Duration) -> OffsetDateTime {
+        self.not_after - lead
+    }
+
+    /// Whether [`Certificate::renew_at`] has passed.
+    pub fn needs_renewal(&self, lead: Duration) -> bool {
+        OffsetDateTime::now_utc() >= self.renew_at(lead)
+    }
+
+    /// Refuse a certificate no browser could accept, so it fails here rather than at handshake.
+    fn ensure_servable(&self) -> Result<(), Error> {
+        if OffsetDateTime::now_utc() >= self.not_after {
+            return Err(Error::CertificateExpired(self.not_after));
+        }
+        Ok(())
+    }
+
     fn certified_key(&self) -> Result<CertifiedKey, Error> {
         let provider = crypto::default_provider();
         Ok(CertifiedKey::from_der(
@@ -436,33 +527,241 @@ impl Certificate {
     }
 }
 
-/// Resolves the certificate to serve for an incoming handshake.
+/// The certificates a server is serving, publishing, and retiring.
 ///
-/// Held behind a lock so the certificate can be replaced without restarting the server, which is
-/// what rotation will need.
+/// A server serves exactly one certificate at a time — nothing in the handshake says which hash
+/// the browser pinned, so it can't choose per-connection. The overlap that makes rotation seamless
+/// therefore lives entirely in *publication*: a browser accepts a list, so both hashes must be in
+/// what your backend serves **before** the served certificate changes underneath it.
+///
+/// That gives one invariant, and this type exists to make it hard to break:
+///
+/// > A certificate must be published, and that publication must have propagated, before it is
+/// > served.
+///
+/// So there are three slots. [`stage`](Rotation::stage) makes a certificate publishable without
+/// serving it; [`promote`](Rotation::promote) starts serving it once you know the hash is out
+/// there. The one it displaces stays published as `previous`, so a rollback or a stale snapshot
+/// still connects, until you [`retire_previous`](Rotation::retire_previous).
+///
+/// Nothing here runs on a timer. Mushi can't see your backchannel, so it can't know whether a
+/// publication landed, and a schedule that assumes it did would be guessing. You drive it;
+/// [`Rotation::retire_previous_at`] and [`Certificate::needs_renewal`] tell you when.
+///
+/// ```no_run
+/// # async fn rotate(
+/// #     rotation: &mushi::Rotation,
+/// #     identity: &mushi::Identity,
+/// #     publish: impl AsyncFn(String) -> Result<(), mushi::Error>,
+/// # ) -> Result<(), mushi::Error> {
+/// rotation.stage(identity.issue(mushi::DEFAULT_VALIDITY)?)?;
+/// publish(rotation.published_sri()).await?; // only proceed once this is confirmed
+/// rotation.promote()?;
+/// # Ok(())
+/// # }
+/// ```
 #[derive(Debug)]
-struct CertResolver {
-    current: RwLock<(Arc<CertifiedKey>, Certificate)>,
+pub struct Rotation {
+    state: RwLock<RotationState>,
+    published: watch::Sender<String>,
 }
 
-impl CertResolver {
-    fn certificate(&self) -> Certificate {
-        // UNWRAP: the lock is only ever held for the length of a clone, and nothing panics under it
-        self.current.read().unwrap().1.clone()
+#[derive(Debug)]
+struct RotationState {
+    previous: Option<Certificate>,
+    current: Certificate,
+    current_key: Arc<CertifiedKey>,
+    staged: Option<Certificate>,
+    promoted_at: Option<OffsetDateTime>,
+}
+
+impl RotationState {
+    /// Every hash that should be published, most likely to match first.
+    fn published(&self) -> Vec<CertHash> {
+        let mut out = vec![self.current.hash.clone()];
+        for cert in [self.staged.as_ref(), self.previous.as_ref()].into_iter().flatten() {
+            if !out.contains(&cert.hash) {
+                out.push(cert.hash.clone());
+            }
+        }
+        out
+    }
+}
+
+impl Rotation {
+    /// Start a rotation serving `current`.
+    pub fn new(current: Certificate) -> Result<Self, Error> {
+        let current_key = Arc::new(current.certified_key()?);
+        let state = RotationState {
+            previous: None,
+            current,
+            current_key,
+            staged: None,
+            promoted_at: None,
+        };
+        let (published, _) = watch::channel(CertHash::set_to_sri(&state.published()));
+        Ok(Self {
+            state: RwLock::new(state),
+            published,
+        })
     }
 
-    fn replace(&self, cert: Certificate) -> Result<(), Error> {
-        let certified = Arc::new(cert.certified_key()?);
-        // UNWRAP: as above
-        *self.current.write().unwrap() = (certified, cert);
+    // UNWRAP (throughout): the lock guards plain data and nothing panics while it is held, so it
+    // can only be poisoned by a panic that never happens.
+    fn read(&self) -> std::sync::RwLockReadGuard<'_, RotationState> {
+        self.state.read().unwrap()
+    }
+
+    /// The certificate being served.
+    pub fn current(&self) -> Certificate {
+        self.read().current.clone()
+    }
+
+    /// The certificate queued to be served next, if any.
+    pub fn staged(&self) -> Option<Certificate> {
+        self.read().staged.clone()
+    }
+
+    /// The certificate most recently displaced, still published, if any.
+    pub fn previous(&self) -> Option<Certificate> {
+        self.read().previous.clone()
+    }
+
+    /// Every hash that should currently be published.
+    pub fn published(&self) -> Vec<CertHash> {
+        self.read().published()
+    }
+
+    /// Every hash that should currently be published, as one SRI string.
+    ///
+    /// This is the whole payload your backchannel needs to carry.
+    pub fn published_sri(&self) -> String {
+        self.published.borrow().clone()
+    }
+
+    /// Observe the published set, which changes on every staging, promotion, and retirement.
+    ///
+    /// Use this to drive publication reactively rather than polling — it also fires for changes
+    /// made anywhere else, so a single subscriber sees everything.
+    pub fn watch(&self) -> watch::Receiver<String> {
+        self.published.subscribe()
+    }
+
+    /// Queue a certificate to be served next.
+    ///
+    /// It is published from this point but **not** served: call [`Rotation::promote`] once you
+    /// know the hash has reached the browsers. Staging again replaces whatever was staged before.
+    pub fn stage(&self, next: Certificate) -> Result<(), Error> {
+        next.ensure_servable()?;
+        self.update(|state| {
+            state.staged = Some(next);
+            Ok(())
+        })
+    }
+
+    /// Serve the staged certificate.
+    ///
+    /// The one it displaces becomes `previous` and stays published until
+    /// [`Rotation::retire_previous`]. Errors with [`Error::NothingStaged`] if nothing is staged.
+    pub fn promote(&self) -> Result<Certificate, Error> {
+        let mut promoted = None;
+        self.update(|state| {
+            let next = state.staged.take().ok_or(Error::NothingStaged)?;
+            next.ensure_servable()?;
+
+            state.current_key = Arc::new(next.certified_key()?);
+            let displaced = std::mem::replace(&mut state.current, next.clone());
+            state.previous = Some(displaced);
+            state.promoted_at = Some(OffsetDateTime::now_utc());
+            promoted = Some(next);
+            Ok(())
+        })?;
+        // UNWRAP: update() returned Ok, so the closure ran to completion and set this
+        Ok(promoted.unwrap())
+    }
+
+    /// Serve a certificate immediately, with no staging step.
+    ///
+    /// Only correct when the hash is *already* published — typically because your backend issued
+    /// the certificate and so knew its hash before the device did. Otherwise use
+    /// [`stage`](Rotation::stage) and [`promote`](Rotation::promote), which enforce the ordering.
+    pub fn replace(&self, cert: Certificate) -> Result<(), Error> {
+        cert.ensure_servable()?;
+        self.update(|state| {
+            state.current_key = Arc::new(cert.certified_key()?);
+            let displaced = std::mem::replace(&mut state.current, cert);
+            state.previous = Some(displaced);
+            state.promoted_at = Some(OffsetDateTime::now_utc());
+            Ok(())
+        })
+    }
+
+    /// The earliest time it is safe to stop publishing the previous certificate.
+    ///
+    /// That is `propagation` after it was displaced. `propagation` is how long a published set
+    /// takes to reach every browser — your backend's cache lifetime, plus however long a loaded
+    /// page may sit on a snapshot before reconnecting. Mushi can't see any of that, which is why
+    /// this computes a deadline rather than acting on one.
+    ///
+    /// `None` when there is nothing to retire.
+    pub fn retire_previous_at(&self, propagation: Duration) -> Option<OffsetDateTime> {
+        let state = self.read();
+        state.previous.as_ref()?;
+        state.promoted_at.map(|at| at + propagation)
+    }
+
+    /// Stop publishing the previous certificate.
+    ///
+    /// Returns it, or `None` if there wasn't one. Retiring early strands any browser still holding
+    /// a snapshot from before the promotion, so consult [`Rotation::retire_previous_at`] first.
+    pub fn retire_previous(&self) -> Option<Certificate> {
+        let mut retired = None;
+        // The closure is infallible, so this cannot fail.
+        let _ = self.update(|state| {
+            retired = state.previous.take();
+            Ok(())
+        });
+        retired
+    }
+
+    /// Retire the previous certificate if [`Rotation::retire_previous_at`] has passed.
+    ///
+    /// The whole of the manual dance in one call, for a loop that ticks periodically.
+    pub fn retire_previous_if_due(&self, propagation: Duration) -> Option<Certificate> {
+        match self.retire_previous_at(propagation) {
+            Some(due) if OffsetDateTime::now_utc() >= due => self.retire_previous(),
+            _ => None,
+        }
+    }
+
+    /// Apply a change and republish if the resulting set differs.
+    fn update<F>(&self, f: F) -> Result<(), Error>
+    where
+        F: FnOnce(&mut RotationState) -> Result<(), Error>,
+    {
+        let sri = {
+            // UNWRAP: see the note on read()
+            let mut state = self.state.write().unwrap();
+            f(&mut state)?;
+            CertHash::set_to_sri(&state.published())
+        };
+
+        // send_if_modified keeps the watch from waking subscribers for a no-op change.
+        self.published.send_if_modified(|current| {
+            if *current == sri {
+                false
+            } else {
+                *current = sri;
+                true
+            }
+        });
         Ok(())
     }
 }
 
-impl ResolvesServerCert for CertResolver {
+impl ResolvesServerCert for Rotation {
     fn resolve(&self, _hello: ClientHello<'_>) -> Option<Arc<CertifiedKey>> {
-        // UNWRAP: as above
-        Some(self.current.read().unwrap().0.clone())
+        Some(self.read().current_key.clone())
     }
 }
 
@@ -523,14 +822,12 @@ impl ServerBuilder {
     /// Bind the socket and start serving `cert`.
     pub fn with_certificate(self, cert: Certificate) -> Result<Server, Error> {
         let provider = crypto::default_provider();
-        let resolver = Arc::new(CertResolver {
-            current: RwLock::new((Arc::new(cert.certified_key()?), cert)),
-        });
+        let rotation = Arc::new(Rotation::new(cert)?);
 
         let mut tls = rustls::ServerConfig::builder_with_provider(provider)
             .with_protocol_versions(&[&rustls::version::TLS13])?
             .with_no_client_auth()
-            .with_cert_resolver(resolver.clone());
+            .with_cert_resolver(rotation.clone());
         tls.alpn_protocols = vec![ALPN.as_bytes().to_vec()];
 
         if cfg!(debug_assertions) {
@@ -551,7 +848,7 @@ impl ServerBuilder {
         Ok(Server {
             inner: Arc::new(Mutex::new(web_transport::Server::new(endpoint.clone()))),
             endpoint,
-            resolver,
+            rotation,
         })
     }
 }
@@ -564,14 +861,14 @@ impl ServerBuilder {
 pub struct Server {
     inner: Arc<Mutex<web_transport::Server>>,
     endpoint: quinn::Endpoint,
-    resolver: Arc<CertResolver>,
+    rotation: Arc<Rotation>,
 }
 
 impl std::fmt::Debug for Server {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Server")
             .field("endpoint", &self.endpoint)
-            .field("cert", &self.resolver.certificate())
+            .field("cert", &self.rotation.current())
             .finish_non_exhaustive()
     }
 }
@@ -597,16 +894,22 @@ impl Server {
 
     /// The certificate currently being served.
     pub fn certificate(&self) -> Certificate {
-        self.resolver.certificate()
+        self.rotation.current()
     }
 
-    /// Replace the certificate served to new connections.
+    /// The certificates this server is serving, publishing, and retiring.
     ///
-    /// Existing sessions are untouched. Publish the new hash *before* calling this, and keep
-    /// publishing the old one until every browser has had a chance to pick up the change —
-    /// `serverCertificateHashes` accepts a list precisely so the overlap is seamless.
+    /// This is where rotation happens. See [`Rotation`].
+    pub fn rotation(&self) -> &Arc<Rotation> {
+        &self.rotation
+    }
+
+    /// Replace the certificate served to new connections, with no staging step.
+    ///
+    /// Shorthand for [`Rotation::replace`], and correct only when the hash is already published.
+    /// Existing sessions are untouched.
     pub fn set_certificate(&self, cert: Certificate) -> Result<(), Error> {
-        self.resolver.replace(cert)
+        self.rotation.replace(cert)
     }
 
     /// The local address the underlying socket is bound to.
@@ -955,6 +1258,15 @@ pub enum Error {
 
     #[error("malformed certificate hash: {0:?}")]
     MalformedHash(String),
+
+    #[error("malformed certificate: {0}")]
+    MalformedCertificate(String),
+
+    #[error("certificate expired at {0}")]
+    CertificateExpired(OffsetDateTime),
+
+    #[error("no certificate is staged")]
+    NothingStaged,
 
     #[error("unknown hash algorithm: {0:?}")]
     UnknownHashAlgorithm(String),

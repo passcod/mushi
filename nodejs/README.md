@@ -25,6 +25,24 @@ while (true) {
 }
 ```
 
+Certificates last under two weeks, so rotate them — publish before you serve:
+
+```js
+const rotation = server.rotation;
+
+if (rotation.current.needsRenewal(lead)) {
+  rotation.stage(identity.issue());
+  await publish(rotation.publishedSri); // only proceed once this is confirmed
+  rotation.promote();
+}
+
+rotation.retirePreviousIfDue(propagation);
+```
+
+Persist the certificate with `toPem()`/`keyPem` and reload it with `Certificate.fromPem()`: the
+hash covers the certificate, not the key, so a device that reissues on boot is unreachable until it
+republishes.
+
 See <https://github.com/passcod/mushi> for the whole story, including what the browser requires of
 the certificate and why there's no client authentication.
 

@@ -20,6 +20,7 @@ tracing = "0.1.41"
 tokio = { version = "1.44.1", features = ["sync"] }
 url = "2.5.4"
 web-transport-proto = "0.6.0"
+x509-parser = { version = "0.18.1", default-features = false }
 web-transport-quinn = { version = "0.12.0", default-features = false, features = ["ring"] }
 
 [dev-dependencies]

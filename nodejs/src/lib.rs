@@ -1,4 +1,5 @@
 use std::{
+    fmt,
     net::ToSocketAddrs,
     sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -10,7 +11,7 @@ use mushi::{
 };
 use napi::bindgen_prelude::*;
 use napi_derive::*;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, watch};
 
 fn err(prefix: &str, e: impl std::fmt::Display) -> Error {
     Error::from_reason(format!("{prefix}: {e}"))
@@ -139,6 +140,206 @@ impl Certificate {
     pub fn is_browser_valid(&self) -> bool {
         self.0.is_browser_valid()
     }
+
+    /// The certificate as PEM, for storing across restarts.
+    ///
+    /// Persisting matters more than it looks: the hash covers the certificate, not the key, so a
+    /// device that reissues on boot comes back with a hash nobody has published yet. It is then
+    /// unreachable until it republishes *and* that propagates — and it can't even do that if the
+    /// backchannel happens to be down.
+    ///
+    /// Store `keyPem` alongside this; both are needed to reload.
+    #[napi]
+    pub fn to_pem(&self) -> String {
+        self.0.to_pem()
+    }
+
+    /// The private key as PEM. Secret material.
+    #[napi(getter)]
+    pub fn key_pem(&self) -> String {
+        self.0.key_pem()
+    }
+
+    /// Reload a stored certificate and its key.
+    ///
+    /// Validity is read back out of the certificate, so a reloaded certificate reports the same
+    /// `notAfter` and `isBrowserValid` as a freshly issued one.
+    ///
+    /// This is also how to adopt a certificate issued elsewhere — if your backend mints
+    /// certificates and provisions them to devices, it already knows the hash before the device
+    /// does, and there is nothing to report back.
+    #[napi(factory)]
+    pub fn from_pem(cert_pem: String, key_pem: String) -> Result<Self> {
+        mushi::Certificate::from_pem(&cert_pem, &key_pem)
+            .map(Self)
+            .map_err(|e| err("certificate", e))
+    }
+
+    /// When rotation should begin: `leadSeconds` before expiry, in milliseconds since the epoch.
+    #[napi]
+    pub fn renew_at(&self, lead_seconds: u32) -> i64 {
+        let at = self.0.renew_at(mushi::time::Duration::seconds(lead_seconds.into()));
+        (at.unix_timestamp_nanos() / 1_000_000) as _
+    }
+
+    /// Whether `renewAt` has passed.
+    #[napi]
+    pub fn needs_renewal(&self, lead_seconds: u32) -> bool {
+        self.0
+            .needs_renewal(mushi::time::Duration::seconds(lead_seconds.into()))
+    }
+}
+
+/// The certificates a server is serving, publishing, and retiring.
+///
+/// A server serves exactly one certificate at a time — nothing in the handshake says which hash
+/// the browser pinned, so it can't choose per-connection. The overlap that makes rotation seamless
+/// therefore lives entirely in *publication*: a browser accepts a list, so both hashes must be in
+/// what your backend serves **before** the served certificate changes underneath it.
+///
+/// So there are three slots. `stage()` makes a certificate publishable without serving it;
+/// `promote()` starts serving it once you know the hash is out there. The one it displaces stays
+/// published as `previous`, so a rollback or a stale snapshot still connects, until you
+/// `retirePrevious()`.
+///
+/// Nothing here runs on a timer. Mushi can't see your backchannel, so it can't know whether a
+/// publication landed. You drive it; `retirePreviousAt()` and `certificate.needsRenewal()` tell
+/// you when.
+///
+/// ```js
+/// rotation.stage(identity.issue());
+/// await publish(rotation.publishedSri); // only proceed once this is confirmed
+/// rotation.promote();
+/// ```
+#[napi]
+#[derive(Clone)]
+pub struct Rotation {
+    inner: Arc<mushi::Rotation>,
+    changes: Arc<Mutex<watch::Receiver<String>>>,
+}
+
+impl fmt::Debug for Rotation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Rotation")
+            .field("published", &self.inner.published_sri())
+            .finish_non_exhaustive()
+    }
+}
+
+impl Rotation {
+    fn new(inner: Arc<mushi::Rotation>) -> Self {
+        let changes = Arc::new(Mutex::new(inner.watch()));
+        Self { inner, changes }
+    }
+}
+
+#[napi]
+impl Rotation {
+    /// The certificate being served.
+    #[napi(getter)]
+    pub fn current(&self) -> Certificate {
+        Certificate(self.inner.current())
+    }
+
+    /// The certificate queued to be served next, if any.
+    #[napi(getter)]
+    pub fn staged(&self) -> Option<Certificate> {
+        self.inner.staged().map(Certificate)
+    }
+
+    /// The certificate most recently displaced, still published, if any.
+    #[napi(getter)]
+    pub fn previous(&self) -> Option<Certificate> {
+        self.inner.previous().map(Certificate)
+    }
+
+    /// Every hash that should currently be published, as one SRI string.
+    ///
+    /// This is the whole payload your backchannel needs to carry.
+    #[napi(getter)]
+    pub fn published_sri(&self) -> String {
+        self.inner.published_sri()
+    }
+
+    /// Queue a certificate to be served next.
+    ///
+    /// It is published from this point but **not** served: call `promote()` once you know the hash
+    /// has reached the browsers. Staging again replaces whatever was staged before.
+    #[napi]
+    pub fn stage(&self, next: &Certificate) -> Result<()> {
+        self.inner
+            .stage(next.0.clone())
+            .map_err(|e| err("rotation", e))
+    }
+
+    /// Serve the staged certificate.
+    ///
+    /// The one it displaces becomes `previous` and stays published until `retirePrevious()`.
+    /// Throws if nothing is staged.
+    #[napi]
+    pub fn promote(&self) -> Result<Certificate> {
+        self.inner
+            .promote()
+            .map(Certificate)
+            .map_err(|e| err("rotation", e))
+    }
+
+    /// Serve a certificate immediately, with no staging step.
+    ///
+    /// Only correct when the hash is *already* published — typically because your backend issued
+    /// the certificate and so knew its hash before the device did. Otherwise use `stage()` and
+    /// `promote()`, which enforce the ordering.
+    #[napi]
+    pub fn replace(&self, cert: &Certificate) -> Result<()> {
+        self.inner
+            .replace(cert.0.clone())
+            .map_err(|e| err("rotation", e))
+    }
+
+    /// The earliest time it is safe to stop publishing the previous certificate, in milliseconds
+    /// since the epoch, or null when there is nothing to retire.
+    ///
+    /// That is `propagationSeconds` after it was displaced: your backend's cache lifetime, plus
+    /// however long a loaded page may sit on a snapshot before reconnecting. Mushi can't see any
+    /// of that, which is why this computes a deadline rather than acting on one.
+    #[napi]
+    pub fn retire_previous_at(&self, propagation_seconds: u32) -> Option<i64> {
+        self.inner
+            .retire_previous_at(mushi::time::Duration::seconds(propagation_seconds.into()))
+            .map(|at| (at.unix_timestamp_nanos() / 1_000_000) as _)
+    }
+
+    /// Stop publishing the previous certificate.
+    ///
+    /// Returns it, or null if there wasn't one. Retiring early strands any browser still holding a
+    /// snapshot from before the promotion, so consult `retirePreviousAt()` first.
+    #[napi]
+    pub fn retire_previous(&self) -> Option<Certificate> {
+        self.inner.retire_previous().map(Certificate)
+    }
+
+    /// Retire the previous certificate if `retirePreviousAt()` has passed.
+    ///
+    /// The whole of the manual dance in one call, for a loop that ticks periodically.
+    #[napi]
+    pub fn retire_previous_if_due(&self, propagation_seconds: u32) -> Option<Certificate> {
+        self.inner
+            .retire_previous_if_due(mushi::time::Duration::seconds(propagation_seconds.into()))
+            .map(Certificate)
+    }
+
+    /// Wait for the published set to change, and return the new SRI string.
+    ///
+    /// Changes on every staging, promotion, and retirement, wherever they happen — so a single
+    /// waiter sees everything. Use this to drive publication reactively rather than polling.
+    #[napi]
+    pub async fn changed(&self) -> Result<String> {
+        let mut rx = self.changes.lock().await;
+        rx.changed()
+            .await
+            .map_err(|e| err("rotation", e))
+            .map(|_| rx.borrow_and_update().clone())
+    }
 }
 
 /// A Mushi server, accepting WebTransport sessions from browsers.
@@ -218,6 +419,14 @@ impl Server {
     #[napi(getter)]
     pub fn certificate(&self) -> Certificate {
         Certificate(self.0.certificate())
+    }
+
+    /// The certificates this server is serving, publishing, and retiring.
+    ///
+    /// This is where rotation happens. See `Rotation`.
+    #[napi(getter)]
+    pub fn rotation(&self) -> Rotation {
+        Rotation::new(self.0.rotation().clone())
     }
 
     /// Replace the certificate served to new connections.

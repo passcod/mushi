@@ -54,6 +54,44 @@ function webTransportHashes(sri) {
 }
 ```
 
+## Rotating
+
+Certificates last under two weeks, so rotation isn't optional. The catch is ordering: a server
+serves exactly one certificate, and nothing in the handshake says which hash the browser pinned, so
+it can't choose per-connection. The overlap therefore lives entirely in *publication* — both hashes
+must be in what your backend serves **before** the served certificate changes underneath it.
+
+> A certificate must be published, and that publication must have propagated, before it is served.
+
+[`Rotation`][docs-rust] has three slots to make that hard to get wrong. `stage` makes a certificate
+publishable without serving it; `promote` starts serving it once you know the hash is out there.
+The one it displaces stays published as `previous`, so a rollback or a stale snapshot still
+connects, until you `retire_previous`.
+
+```rust
+let rotation = server.rotation();
+
+if rotation.current().needs_renewal(lead) {
+    rotation.stage(identity.issue(mushi::DEFAULT_VALIDITY)?)?;
+    publish(rotation.published_sri()).await?;  // only proceed once this is confirmed
+    rotation.promote()?;
+}
+
+// Once the old hash has had time to reach every browser.
+rotation.retire_previous_if_due(propagation);
+```
+
+Nothing runs on a timer. Mushi can't see your backchannel, so it can't know whether a publication
+landed, and a schedule that assumed it did would be guessing — `retire_previous_at` and
+`needs_renewal` compute deadlines for you to act on. `rotation.watch()` pushes the published set on
+every change if you'd rather drive publication reactively than poll.
+
+**Persist the certificate**, not just the identity. The hash covers the certificate, not the key,
+so a device that reissues on boot comes back with a hash nobody has published — unreachable until
+it republishes and that propagates, which it can't even do if the backchannel is down.
+`Certificate::to_pem` and `key_pem` store it; `Certificate::from_pem` reloads it. That is also how
+to adopt a certificate issued elsewhere, if your backend mints them and provisions them down.
+
 ## What the browser imposes
 
 The certificate rules come from the WebTransport specification, not from Mushi, and they shape the
@@ -107,14 +145,14 @@ Mushi is [a Rust crate][lib-rust] ([docs][docs-rust]) with bindings for [Node.js
 Rebuilt around the browser use case. Working today:
 
 - Certificate issuance under the browser's constraints, with the hash to pin
-- Hot certificate replacement on a running server, for rotation
+- Rotation with an overlapping published set, and persistence across restarts
 - Path routing and rejection at the handshake, and subprotocol negotiation where supported
 - Streams (uni and bidi, in both directions) and datagrams
 
 Not yet:
 
-- **Scheduled rotation.** `Server::set_certificate` swaps the certificate; deciding *when*, and
-  publishing the overlapping hash set, is still yours to write.
+- **The backchannel itself.** Mushi tells you what to publish and when it is safe to change what it
+  serves; getting that to your cloud app, and the device's address alongside it, is yours.
 - **Verification against a real browser.** The test suite pins hashes exactly as a browser does,
   but no browser has been driven against this yet.
 - **Protocols on top.** The plan is to tunnel ordinary web protocols over WebTransport so a

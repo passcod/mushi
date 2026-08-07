@@ -742,6 +742,7 @@ dependencies = [
  "url",
  "web-transport-proto",
  "web-transport-quinn",
+ "x509-parser",
 ]
 
 [[package]]
