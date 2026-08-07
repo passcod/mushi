@@ -3,6 +3,12 @@ resolver = "3"
 members = [
     "lib",
     "nodejs",
+]
+
+# The Python bindings still target the pre-pivot mutual-auth API and don't build. They're parked
+# rather than deleted: reviving them is a matter of mirroring nodejs/src/lib.rs, and nothing else
+# depends on them in the meantime. See python/README.md.
+exclude = [
     "python",
 ]
 

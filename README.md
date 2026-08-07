@@ -1,62 +1,115 @@
 # Mushi 🫖🍵
 
-_WebTransport with mutual authentication._
+_WebTransport for browsers, without PKI._
+
+> [!WARNING]
+> Mushi is being rebuilt around a new purpose and is **not ready for use**. See
+> [Status](#status) for what works today.
 
 ## What is this?
 
-**[Iroh](https://iroh.computer)** is peer-to-peer QUIC connections with peer-to-peer
-authentication based on ED25519 keys. **Mushi** is client-server QUIC connections with
-peer-to-peer authentication based on X.509 keys.
+A browser can't talk to a device that has no publicly-trusted certificate. Local addresses can't
+get one — no CA will issue for `192.168.1.47` — and mixed-content rules block plain HTTP. The
+usual escapes are all miserable: ship a local CA, tunnel everything through the cloud, or play
+DNS games to point a real certificate at a private address.
 
-If you're not familiar, Iroh is this really neat project that offers the same kind of
-"it just works" networking as [Tailscale](https://tailscale.com), but embedded directly
-into applications, like you'd have TCP or HTTP. Iroh performs all the NAT traversal,
-hole-punching, port negotiation, discovery of peers, etc... and you get a super-simple
-`Endpoint` structure that you can talk to other peers with. The cryptography of Iroh is
-based on mTLS: each peer has an ED25519 keypair, and uses it both as a certificate and
-as a node identity. There's no PKI: an incoming connection presents its ED25519 public
-key, the TLS handshake makes sure it's authentic, and it's up to the application whether
-it trusts that key (and establishes the connection) or not.
+WebTransport has a sanctioned way out. Its [`serverCertificateHashes`] option lets a page name the
+SHA-256 of the certificate it expects, and the browser skips chain validation entirely. **Mushi is
+the server side of that arrangement.**
 
-Mushi came about when wanting something similar to Iroh, but in a context where the
-peer-to-peer bits were unnecessary (and in fact counter-productive), and where web PKI
-was inappropriate, yet an application-defined trust model with mutually-authenticated
-peers was more desirable. Additionally, with discovery and other details unused, it
-became easier to be flexible on the cryptography suite: Mushi works with anything that
-TLS 1.3 does, such as ECDSA, rather than being restricted to ED25519.
+The intended shape is a cloud app plus a local device:
 
-In the end, Mushi is:
+1. Your app is served from an origin the browser already trusts, over ordinary HTTPS.
+2. That origin tells the page which certificate hashes the device is currently serving.
+3. The page connects straight to the device over WebTransport, pinning those hashes.
 
-- QUIC
-- with short-lived self-signed certificates on both client and server sides
-- from persistent (long-lived) keypairs
-- wrapped in the WebTransport API
+Nothing needs to be installed in the browser — the native [`WebTransport`] API is enough.
 
-On connection establishment, an Endpoint receives the DER-encoded Public Key Information
-block of the other side, and can use that as an opaque identity blob for the remote peer.
-That structure contains both the public key data and an algorithm specifier, which lets
-applications choose from ECDSA or ED25519 as is more convenient. (RSA is not allowed.)
+```js
+const wt = new WebTransport(`https://${device}:4433/my-app`, {
+  serverCertificateHashes: [{ algorithm: "sha-256", value: hashFromYourBackend }],
+});
+await wt.ready;
+```
 
-## How do I use this?
+## What the browser imposes
 
-Mushi is [a Rust crate][lib-rust] ([docs][docs-rust]), with some foreign interfaces for
-convenience:
+The certificate rules come from the WebTransport specification, not from Mushi, and they shape the
+whole design:
 
-- [Node.js][lib-node] ([docs][docs-node])
-- [Python][lib-python] ([docs][docs-python]) (experimental!)
-- [a CLI tool][cli] ([docs][docs-cli]) (TODO!)
+- **ECDSA P-256 only.** RSA is banned outright; Ed25519 isn't permitted either.
+- **Under 14 days of validity.** Short life stands in for revocation, so certificates get
+  **rotated**, not issued once. Because the browser accepts a *list* of hashes, publishing the
+  current and next hash together makes rotation seamless.
+- **SHA-256** is the only hash algorithm currently specified.
+- **No client certificates.** The browser has no way to present one, at any layer.
 
-Mushi is also nothing special: as long as you have TLS-level control for your WebTransport
-implementation, you can play along. Require client certificates, don't validate against web
-PKI, match public keys instead, and prefer issuing short-lived certificates on the fly.
+That last point is why Mushi no longer does mutual authentication. Authorise at the handshake
+instead: the browser can't set request headers and WebTransport doesn't send cookies, so the **URL
+path is the only channel it controls** — it carries both protocol selection and whatever token you
+authenticate with. The `Origin` header, set by the browser itself, is worth checking too.
 
+Because the browser pins a hash of the whole certificate rather than a key, it doesn't care what's
+inside. The scheme is naturally crypto-agile: when browsers accept a new signature algorithm, you
+can serve certificates under it and publish both hashes, with no protocol change.
+
+## Using it
+
+```rust
+let identity = mushi::Identity::generate()?;
+let cert = identity.issue(mushi::DEFAULT_VALIDITY, ["device.local".parse()?])?;
+
+// Publish this via your cloud app, over an origin the browser already trusts.
+println!("{}", cert.hash().to_hex());
+
+let server = mushi::Server::builder()
+    .with_addr("[::]:4433".parse()?)
+    .with_certificate(cert)?;
+
+while let Some(request) = server.accept().await {
+    match request.path() {
+        "/my-app" => {
+            let session = request.ok().await?;
+            // streams and datagrams
+        }
+        _ => request.reject(mushi::StatusCode::NOT_FOUND).await?,
+    }
+}
+```
+
+Mushi is [a Rust crate][lib-rust] ([docs][docs-rust]) with bindings for [Node.js][lib-node]
+([docs][docs-node]).
+
+## Status
+
+Rebuilt around the browser use case. Working today:
+
+- Certificate issuance under the browser's constraints, with the hash to pin
+- Hot certificate replacement on a running server, for rotation
+- Path routing and rejection at the handshake, and subprotocol negotiation where supported
+- Streams (uni and bidi, in both directions) and datagrams
+
+Not yet:
+
+- **Scheduled rotation.** `Server::set_certificate` swaps the certificate; deciding *when*, and
+  publishing the overlapping hash set, is still yours to write.
+- **Verification against a real browser.** The test suite pins hashes exactly as a browser does,
+  but no browser has been driven against this yet.
+- **Protocols on top.** The plan is to tunnel ordinary web protocols over WebTransport so a
+  PKI-less device can look like a normal origin: `mushi-http` (a service worker making real
+  `fetch` work, which also covers subresources and SSE), then `mushi-ws`.
+- **Python bindings**, which are [parked](./python/README.md) on the pre-pivot API.
+
+Prior to this, Mushi was a symmetric peer-to-peer transport with mutual TLS authentication. That
+was dropped: browsers can't do it, and for native peer-to-peer you're better off with plain
+[quinn] than with WebTransport layered on top.
+
+[`serverCertificateHashes`]: https://developer.mozilla.org/en-US/docs/Web/API/WebTransport/WebTransport#servercertificatehashes
+[`WebTransport`]: https://developer.mozilla.org/en-US/docs/Web/API/WebTransport
 [lib-rust]: https://lib.rs/crate/mushi
 [docs-rust]: https://docs.rs/mushi
 [lib-node]: https://www.npmjs.com/package/mushi
 [docs-node]: https://passcod.github.io/mushi/js/
-[lib-python]: https://pypi.org/pymushi
-[docs-python]: https://todo.example.com
-[cli]: https://lib.rs/crate/mushi-cli
-[docs-cli]: https://github.com/passcod/mushi/blob/main/cli/README.md
+[quinn]: https://docs.rs/quinn
 
 🧋

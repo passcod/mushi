@@ -1,15 +1,10 @@
+# The Python bindings are parked and do not currently build: they still target the pre-pivot
+# mutual-auth API. See python/README.md. This workflow only runs when dispatched by hand, so
+# it neither blocks CI nor disappears before the port happens.
 name: Python
 
 on:
-  push:
-    branches:
-      - main
-    tags:
-      - "python-*"
-    paths:
-      - python/**
-      - .github/workflows/python.yml
-  pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
