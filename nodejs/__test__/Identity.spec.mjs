@@ -29,11 +29,6 @@ test("issues a certificate browsers would accept", (t) => {
   t.true(cert.notBefore < Date.now());
 });
 
-test("covers the names it was given", (t) => {
-  // Just has to be accepted; the SANs themselves aren't readable back out.
-  t.notThrows(() => Identity.generate().issue(3600, ["device.local", "192.168.1.5"]));
-});
-
 test("refuses validity browsers would reject", (t) => {
   const id = Identity.generate();
   const fortnight = 14 * 24 * 60 * 60;

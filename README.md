@@ -57,7 +57,7 @@ can serve certificates under it and publish both hashes, with no protocol change
 
 ```rust
 let identity = mushi::Identity::generate()?;
-let cert = identity.issue(mushi::DEFAULT_VALIDITY, ["device.local".parse()?])?;
+let cert = identity.issue(mushi::DEFAULT_VALIDITY)?;
 
 // Publish this via your cloud app, over an origin the browser already trusts.
 println!("{}", cert.hash().to_hex());

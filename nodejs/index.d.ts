@@ -45,10 +45,11 @@ export declare class Identity {
    * `validitySeconds` must be under 14 days, or browsers will refuse the connection. Defaults to
    * 13 days, which leaves room to rotate before expiry.
    *
-   * `sans` are the subject alternative names the certificate covers — hostnames or IP addresses
-   * the device is reached on. Loopback names are always included.
+   * The certificate carries no subject alternative names: a matching hash replaces certificate
+   * validation wholesale, names included, so the device can be reached on any address without
+   * reissuing.
    */
-  issue(validitySeconds?: number, sans?: Array<string>): Certificate
+  issue(validitySeconds?: number): Certificate
 }
 /** A certificate issued from an `Identity`, along with the hash browsers pin it by. */
 export declare class Certificate {

@@ -5,7 +5,7 @@ use std::{
 };
 
 use mushi::{
-    San, StatusCode,
+    StatusCode,
     quinn::congestion::{BbrConfig, ControllerFactory, CubicConfig, NewRenoConfig},
 };
 use napi::bindgen_prelude::*;
@@ -61,27 +61,18 @@ impl Identity {
     /// `validitySeconds` must be under 14 days, or browsers will refuse the connection. Defaults to
     /// 13 days, which leaves room to rotate before expiry.
     ///
-    /// `sans` are the subject alternative names the certificate covers — hostnames or IP addresses
-    /// the device is reached on. Loopback names are always included.
-    #[napi(ts_args_type = "validitySeconds?: number, sans?: Array<string>")]
-    pub fn issue(
-        &self,
-        validity_seconds: Option<u32>,
-        sans: Option<Vec<String>>,
-    ) -> Result<Certificate> {
+    /// The certificate carries no subject alternative names: a matching hash replaces certificate
+    /// validation wholesale, names included, so the device can be reached on any address without
+    /// reissuing.
+    #[napi(ts_args_type = "validitySeconds?: number")]
+    pub fn issue(&self, validity_seconds: Option<u32>) -> Result<Certificate> {
         let validity = match validity_seconds {
             Some(secs) => mushi::time::Duration::seconds(secs.into()),
             None => mushi::DEFAULT_VALIDITY,
         };
 
-        let sans = sans
-            .unwrap_or_default()
-            .into_iter()
-            // UNWRAP: San parsing is infallible
-            .map(|s| s.parse::<San>().unwrap());
-
         self.0
-            .issue(validity, sans)
+            .issue(validity)
             .map(Certificate)
             .map_err(|e| err("certificate", e))
     }

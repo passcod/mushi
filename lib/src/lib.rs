@@ -36,7 +36,7 @@
 //! ```no_run
 //! # async fn example() -> Result<(), mushi::Error> {
 //! let identity = mushi::Identity::generate()?;
-//! let cert = identity.issue(mushi::DEFAULT_VALIDITY, ["device.local".parse().unwrap()])?;
+//! let cert = identity.issue(mushi::DEFAULT_VALIDITY)?;
 //!
 //! // Hand this to the browser out of band, over an origin it already trusts.
 //! println!("serverCertificateHashes: {}", cert.hash().to_hex());
@@ -62,7 +62,7 @@
 #![warn(missing_docs)]
 
 use std::{
-    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
+    net::{IpAddr, Ipv6Addr, SocketAddr},
     sync::{Arc, RwLock},
 };
 
@@ -76,7 +76,7 @@ pub use web_transport_quinn::{self as web_transport, quinn, quinn::rustls};
 
 use bytes::{Buf, BufMut, Bytes};
 use quinn::{congestion::ControllerFactory, crypto::rustls::QuicServerConfig};
-use rcgen::{CertificateParams, DistinguishedName as Dn, DnType, KeyPair, SanType};
+use rcgen::{CertificateParams, DistinguishedName as Dn, DnType, KeyPair};
 use rustls::{
     KeyLogFile, SignatureScheme,
     pki_types::{CertificateDer, PrivateKeyDer},
@@ -192,18 +192,14 @@ impl Identity {
     /// `validity` must be under [`MAX_VALIDITY`], or browsers will refuse the connection;
     /// [`DEFAULT_VALIDITY`] is a good choice.
     ///
-    /// `sans` are the subject alternative names the certificate covers. Certificate-hash
-    /// connections skip chain validation, but include the addresses the device is actually reached
-    /// on regardless — it costs nothing and doesn't rely on every browser agreeing to skip name
-    /// checks too. Loopback names are always included.
+    /// The certificate carries no subject alternative names. A matching hash replaces certificate
+    /// validation wholesale, names included, so there is nothing for a SAN to assert: the device
+    /// can be reached on any address without reissuing. A distinguished name is set because some
+    /// stacks dislike a certificate with neither.
     ///
     /// The certificate is issued slightly in the past, so that a device whose clock is a little
     /// behind the browser's is still usable.
-    pub fn issue(
-        &self,
-        validity: Duration,
-        sans: impl IntoIterator<Item = San>,
-    ) -> Result<Certificate, Error> {
+    pub fn issue(&self, validity: Duration) -> Result<Certificate, Error> {
         if validity >= MAX_VALIDITY {
             return Err(Error::ValidityTooLong(validity));
         }
@@ -211,20 +207,7 @@ impl Identity {
             return Err(Error::ValidityTooShort(validity));
         }
 
-        let mut names = vec![
-            SanType::DnsName("localhost".try_into()?),
-            SanType::IpAddress(IpAddr::V4(Ipv4Addr::LOCALHOST)),
-            SanType::IpAddress(IpAddr::V6(Ipv6Addr::LOCALHOST)),
-        ];
-        for san in sans {
-            let san = san.into_rcgen()?;
-            if !names.contains(&san) {
-                names.push(san);
-            }
-        }
-
         let mut params = CertificateParams::default();
-        params.subject_alt_names = names;
         params.distinguished_name = Dn::new();
         params.distinguished_name.push(DnType::CommonName, "mushi");
 
@@ -247,36 +230,6 @@ impl Identity {
             hash,
             not_before,
             not_after,
-        })
-    }
-}
-
-/// A subject alternative name for an issued [`Certificate`].
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum San {
-    /// A DNS name, such as `device.local`.
-    Dns(String),
-    /// An IP address the device is reached on.
-    Ip(IpAddr),
-}
-
-impl San {
-    fn into_rcgen(self) -> Result<SanType, Error> {
-        Ok(match self {
-            San::Dns(name) => SanType::DnsName(name.try_into()?),
-            San::Ip(addr) => SanType::IpAddress(addr),
-        })
-    }
-}
-
-impl std::str::FromStr for San {
-    type Err = std::convert::Infallible;
-
-    /// Parses as an IP address if possible, and as a DNS name otherwise.
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(match s.parse::<IpAddr>() {
-            Ok(ip) => San::Ip(ip),
-            Err(_) => San::Dns(s.to_owned()),
         })
     }
 }

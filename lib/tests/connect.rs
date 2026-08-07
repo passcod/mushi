@@ -3,7 +3,7 @@
 use std::sync::{Arc, LazyLock};
 
 use mushi::{
-    Certificate, DEFAULT_VALIDITY, Identity, San, Server, Session, StatusCode, Url, quinn,
+    Certificate, DEFAULT_VALIDITY, Identity, Server, Session, StatusCode, Url, quinn,
     rustls::{
         self, DigitallySignedStruct, SignatureScheme,
         client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier},
@@ -81,7 +81,7 @@ impl ServerCertVerifier for PinnedHashes {
 /// Bind to IPv4 loopback: not every CI runner (or container) has IPv6 configured.
 fn server() -> (Server, Certificate) {
     let id = Identity::generate().unwrap();
-    let cert = id.issue(DEFAULT_VALIDITY, Vec::<San>::new()).unwrap();
+    let cert = id.issue(DEFAULT_VALIDITY).unwrap();
     let server = Server::builder()
         .with_addr("127.0.0.1:0".parse().unwrap())
         .with_certificate(cert.clone())
@@ -162,7 +162,7 @@ async fn rejects_when_the_hash_does_not_match() {
     // A different certificate entirely: the client should refuse the handshake.
     let other = Identity::generate()
         .unwrap()
-        .issue(DEFAULT_VALIDITY, Vec::<San>::new())
+        .issue(DEFAULT_VALIDITY)
         .unwrap();
     let client = client_pinning(&[&other]);
     let (task, _sessions) = serve(server);
@@ -181,7 +181,7 @@ async fn accepts_any_of_several_pinned_hashes() {
     // Publishing current and next together is what makes rotation seamless.
     let next = Identity::generate()
         .unwrap()
-        .issue(DEFAULT_VALIDITY, Vec::<San>::new())
+        .issue(DEFAULT_VALIDITY)
         .unwrap();
     let client = client_pinning(&[&next, &cert]);
     let (task, mut sessions) = serve(server);
@@ -199,7 +199,7 @@ async fn rotation_swaps_the_served_certificate() {
     let target = url(&server, "/");
 
     let id = Identity::generate().unwrap();
-    let second = id.issue(DEFAULT_VALIDITY, Vec::<San>::new()).unwrap();
+    let second = id.issue(DEFAULT_VALIDITY).unwrap();
     server.set_certificate(second.clone()).unwrap();
     assert_eq!(server.certificate().hash(), second.hash());
 
