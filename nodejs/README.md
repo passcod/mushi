@@ -9,7 +9,7 @@ certificate hash instead of validating a chain.
 import { Identity, Server } from "mushi";
 
 const cert = Identity.generate().issue();
-console.log("publish this hash:", cert.hashHex);
+console.log("publish this hash:", cert.hashSri); // sha256-47DEQpj8...
 
 const server = new Server("[::]:4433", cert);
 while (true) {

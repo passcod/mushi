@@ -85,7 +85,16 @@ pub struct Certificate(mushi::Certificate);
 
 #[napi]
 impl Certificate {
-    /// The hash to give the browser as `serverCertificateHashes`.
+    /// The hash in Subresource Integrity syntax, such as `sha256-47DEQpj8...`.
+    ///
+    /// This is the form to publish. Several can be joined with spaces, exactly as SRI allows, so
+    /// that a page holding any current snapshot can connect across a rotation overlap.
+    #[napi(getter)]
+    pub fn hash_sri(&self) -> String {
+        self.0.hash().to_sri()
+    }
+
+    /// The raw digest, for handing straight to `serverCertificateHashes`.
     ///
     /// ```js
     /// new WebTransport(url, {
@@ -98,12 +107,14 @@ impl Certificate {
     }
 
     /// The hash algorithm, in the spelling the browser API uses.
+    ///
+    /// Note this differs from the SRI spelling: `sha-256` here, `sha256` in the token.
     #[napi(getter)]
     pub fn hash_algorithm(&self) -> String {
         self.0.hash().algorithm.to_owned()
     }
 
-    /// The hash as lowercase hex, for publishing as text.
+    /// The digest as lowercase hex, for systems that already speak hex.
     #[napi(getter)]
     pub fn hash_hex(&self) -> String {
         self.0.hash().to_hex()

@@ -99,3 +99,88 @@ fn rotating_changes_the_hash_even_on_the_same_key() {
     // This is why the hash has to be republished on every rotation, not just on rekey.
     assert_ne!(first.hash(), second.hash());
 }
+
+#[test]
+fn hash_round_trips_through_sri() {
+    let cert = Identity::generate().unwrap().issue(DEFAULT_VALIDITY).unwrap();
+    let hash = cert.hash();
+
+    let sri = hash.to_sri();
+    assert!(sri.starts_with("sha256-"));
+    assert_eq!(sri, hash.to_string());
+    assert_eq!(&CertHash::from_sri(&sri).unwrap(), hash);
+    assert_eq!(&sri.parse::<CertHash>().unwrap(), hash);
+
+    // SRI spells it `sha256`; the browser dictionary wants `sha-256`.
+    assert_eq!(hash.algorithm, "sha-256");
+}
+
+#[test]
+fn sri_digest_is_standard_base64() {
+    let cert = Identity::generate().unwrap().issue(DEFAULT_VALIDITY).unwrap();
+    let digest = cert.hash().to_sri();
+    let digest = digest.strip_prefix("sha256-").unwrap();
+
+    // URL-safe base64 would put '-' inside the digest and break splitting on the first one.
+    assert!(!digest.contains('-'));
+    assert!(!digest.contains('_'));
+    // 32 bytes, padded.
+    assert_eq!(digest.len(), 44);
+    assert!(digest.ends_with('='));
+}
+
+#[test]
+fn a_set_publishes_as_one_space_separated_string() {
+    let id = Identity::generate().unwrap();
+    let current = id.issue(DEFAULT_VALIDITY).unwrap();
+    let staged = id.issue(DEFAULT_VALIDITY).unwrap();
+
+    // SRI's "any of these matching is acceptable" is exactly the rotation overlap.
+    let published = CertHash::set_to_sri(&[current.hash().clone(), staged.hash().clone()]);
+    assert_eq!(published.split(' ').count(), 2);
+
+    let parsed = CertHash::set_from_sri(&published).unwrap();
+    assert_eq!(parsed, vec![current.hash().clone(), staged.hash().clone()]);
+}
+
+#[test]
+fn sri_parsing_is_lenient_where_it_can_be() {
+    let hash = Identity::generate()
+        .unwrap()
+        .issue(DEFAULT_VALIDITY)
+        .unwrap()
+        .hash()
+        .clone();
+    let sri = hash.to_sri();
+
+    // Options suffix, per the SRI grammar.
+    assert_eq!(CertHash::from_sri(&format!("{sri}?foo=bar")).unwrap(), hash);
+    // Surrounding whitespace, and irregular spacing within a set.
+    assert_eq!(CertHash::from_sri(&format!("  {sri} ")).unwrap(), hash);
+    assert_eq!(
+        CertHash::set_from_sri(&format!("\n{sri}   {sri}\t")).unwrap(),
+        vec![hash.clone(), hash.clone()]
+    );
+    // Unpadded and URL-safe digests still decode.
+    let unpadded = sri.trim_end_matches('=');
+    assert_eq!(CertHash::from_sri(unpadded).unwrap(), hash);
+}
+
+#[test]
+fn sri_parsing_rejects_what_it_should() {
+    assert!(matches!(
+        CertHash::from_sri("47DEQpj8HBSa"),
+        Err(Error::MalformedHash(_))
+    ));
+    assert!(matches!(
+        CertHash::from_sri("md5-47DEQpj8HBSa"),
+        Err(Error::UnknownHashAlgorithm(_))
+    ));
+    assert!(matches!(
+        CertHash::from_sri("sha256-not!valid!base64!"),
+        Err(Error::MalformedHash(_))
+    ));
+
+    // A partly-unreadable set fails loudly: silently dropping a hash can strand a device.
+    assert!(CertHash::set_from_sri("sha256-AAAA md5-BBBB").is_err());
+}

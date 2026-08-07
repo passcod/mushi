@@ -22,6 +22,10 @@ test("issues a certificate browsers would accept", (t) => {
   t.is(cert.hash.length, 32);
   t.is(cert.hashHex.length, 64);
   t.is(cert.hashHex, cert.hash.toString("hex"));
+
+  // SRI spells the algorithm without the hyphen, and uses standard base64.
+  t.is(cert.hashSri, `sha256-${cert.hash.toString("base64")}`);
+  t.false(cert.hashSri.slice(7).includes("-"));
   t.true(cert.isBrowserValid);
 
   // Under 14 days, and backdated so a trailing clock still works.
@@ -41,5 +45,5 @@ test("refuses validity browsers would reject", (t) => {
 
 test("rotating changes the hash even on the same key", (t) => {
   const id = Identity.generate();
-  t.not(id.issue().hashHex, id.issue().hashHex);
+  t.not(id.issue().hashSri, id.issue().hashSri);
 });

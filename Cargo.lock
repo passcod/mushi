@@ -730,6 +730,7 @@ dependencies = [
 name = "mushi"
 version = "0.0.12"
 dependencies = [
+ "base64",
  "bytes",
  "http",
  "rcgen",

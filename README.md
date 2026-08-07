@@ -27,9 +27,31 @@ Nothing needs to be installed in the browser — the native [`WebTransport`] API
 
 ```js
 const wt = new WebTransport(`https://${device}:4433/my-app`, {
-  serverCertificateHashes: [{ algorithm: "sha-256", value: hashFromYourBackend }],
+  serverCertificateHashes: webTransportHashes(sriFromYourBackend),
 });
 await wt.ready;
+```
+
+## Publishing hashes
+
+Hashes are published in [Subresource Integrity][sri] syntax — `sha256-47DEQpj8...`, several joined
+by spaces. That's a deliberate borrow: SRI means *"any of these digests matching is acceptable"*,
+which is exactly what `serverCertificateHashes` does with a list, and exactly what a rotation
+overlap needs. So the whole publishable set is one string, with no schema to agree on or version.
+
+The browser wants it as a list of objects, which is four lines. Note that SRI and WebTransport
+spell the algorithm differently — `sha256` in the token, `sha-256` in the dictionary:
+
+```js
+function webTransportHashes(sri) {
+  return sri.trim().split(/\s+/).map((token) => {
+    const at = token.indexOf("-");
+    return {
+      algorithm: token.slice(0, at).replace(/^sha/, "sha-"),
+      value: Uint8Array.from(atob(token.slice(at + 1)), (c) => c.charCodeAt(0)),
+    };
+  });
+}
 ```
 
 ## What the browser imposes
@@ -60,7 +82,7 @@ let identity = mushi::Identity::generate()?;
 let cert = identity.issue(mushi::DEFAULT_VALIDITY)?;
 
 // Publish this via your cloud app, over an origin the browser already trusts.
-println!("{}", cert.hash().to_hex());
+println!("{}", cert.hash()); // sha256-47DEQpj8...
 
 let server = mushi::Server::builder()
     .with_addr("[::]:4433".parse()?)
@@ -106,6 +128,7 @@ was dropped: browsers can't do it, and for native peer-to-peer you're better off
 
 [`serverCertificateHashes`]: https://developer.mozilla.org/en-US/docs/Web/API/WebTransport/WebTransport#servercertificatehashes
 [`WebTransport`]: https://developer.mozilla.org/en-US/docs/Web/API/WebTransport
+[sri]: https://developer.mozilla.org/en-US/docs/Web/Security/Subresource_Integrity
 [lib-rust]: https://lib.rs/crate/mushi
 [docs-rust]: https://docs.rs/mushi
 [lib-node]: https://www.npmjs.com/package/mushi

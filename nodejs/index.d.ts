@@ -54,7 +54,14 @@ export declare class Identity {
 /** A certificate issued from an `Identity`, along with the hash browsers pin it by. */
 export declare class Certificate {
   /**
-   * The hash to give the browser as `serverCertificateHashes`.
+   * The hash in Subresource Integrity syntax, such as `sha256-47DEQpj8...`.
+   *
+   * This is the form to publish. Several can be joined with spaces, exactly as SRI allows, so
+   * that a page holding any current snapshot can connect across a rotation overlap.
+   */
+  get hashSri(): string
+  /**
+   * The raw digest, for handing straight to `serverCertificateHashes`.
    *
    * ```js
    * new WebTransport(url, {
@@ -63,9 +70,13 @@ export declare class Certificate {
    * ```
    */
   get hash(): Buffer
-  /** The hash algorithm, in the spelling the browser API uses. */
+  /**
+   * The hash algorithm, in the spelling the browser API uses.
+   *
+   * Note this differs from the SRI spelling: `sha-256` here, `sha256` in the token.
+   */
   get hashAlgorithm(): string
-  /** The hash as lowercase hex, for publishing as text. */
+  /** The digest as lowercase hex, for systems that already speak hex. */
   get hashHex(): string
   /** When the certificate becomes valid, in milliseconds since the Unix epoch. */
   get notBefore(): number

@@ -74,6 +74,12 @@ pub use time;
 pub use url::Url;
 pub use web_transport_quinn::{self as web_transport, quinn, quinn::rustls};
 
+use base64::{
+    Engine,
+    engine::general_purpose::{
+        STANDARD as BASE64, STANDARD_NO_PAD as BASE64_UNPADDED, URL_SAFE_NO_PAD as BASE64_URLSAFE,
+    },
+};
 use bytes::{Buf, BufMut, Bytes};
 use quinn::{congestion::ControllerFactory, crypto::rustls::QuicServerConfig};
 use rcgen::{CertificateParams, DistinguishedName as Dn, DnType, KeyPair};
@@ -238,6 +244,18 @@ impl Identity {
 ///
 /// This mirrors the `WebTransportHash` dictionary: an algorithm name alongside the digest. Publish
 /// both — a bare digest can't survive the algorithm changing.
+///
+/// The wire format is [Subresource Integrity][sri] syntax, `sha256-<standard base64>`. That's a
+/// deliberate borrow: SRI's semantics are "any of these digests matching is acceptable", which is
+/// exactly what `serverCertificateHashes` does with a list, and exactly what a rotation overlap
+/// needs. A whole publishable set is therefore one space-separated string — see
+/// [`CertHash::set_to_sri`] — with no schema to agree on or version.
+///
+/// Note that SRI and WebTransport spell the algorithm differently: `sha256` in the SRI token,
+/// `sha-256` in the browser dictionary. [`CertHash::algorithm`] always holds the browser spelling,
+/// so it can be handed to `WebTransportHash` directly.
+///
+/// [sri]: https://developer.mozilla.org/en-US/docs/Web/Security/Subresource_Integrity
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CertHash {
     /// The hash algorithm, in the spelling the browser API uses (`sha-256`).
@@ -246,6 +264,16 @@ pub struct CertHash {
     /// The digest itself.
     pub value: Vec<u8>,
 }
+
+/// Algorithms recognised on the wire, as (SRI token, browser spelling).
+///
+/// Only `sha-256` is currently valid for WebTransport; the others are accepted when parsing so a
+/// published set stays readable if that ever widens.
+const HASH_ALGORITHMS: &[(&str, &str)] = &[
+    ("sha256", "sha-256"),
+    ("sha384", "sha-384"),
+    ("sha512", "sha-512"),
+];
 
 impl CertHash {
     /// Compute the hash of a DER-encoded certificate.
@@ -257,13 +285,78 @@ impl CertHash {
         }
     }
 
+    /// The hash in [Subresource Integrity][sri] syntax, such as `sha256-47DEQpj8...`.
+    ///
+    /// This is also the [`Display`](std::fmt::Display) form.
+    ///
+    /// [sri]: https://developer.mozilla.org/en-US/docs/Web/Security/Subresource_Integrity
+    pub fn to_sri(&self) -> String {
+        let token = HASH_ALGORITHMS
+            .iter()
+            .find(|(_, browser)| *browser == self.algorithm)
+            .map(|(sri, _)| *sri)
+            // An algorithm outside the table can only come from constructing CertHash by hand;
+            // fall back to stripping the hyphen rather than losing the value entirely.
+            .map(str::to_owned)
+            .unwrap_or_else(|| self.algorithm.replace('-', ""));
+
+        format!("{token}-{}", BASE64.encode(&self.value))
+    }
+
+    /// Parse a single [Subresource Integrity][sri] token.
+    ///
+    /// Accepts standard or URL-safe base64, with or without padding, and ignores any `?options`
+    /// suffix as SRI allows.
+    ///
+    /// [sri]: https://developer.mozilla.org/en-US/docs/Web/Security/Subresource_Integrity
+    pub fn from_sri(sri: &str) -> Result<Self, Error> {
+        let token = sri.trim();
+        // SRI permits `hash-expression?options`; nothing here uses options, so drop them.
+        let token = token.split('?').next().unwrap_or(token);
+
+        // Standard base64 never contains '-', so the first one separates algorithm from digest.
+        let (alg, digest) = token
+            .split_once('-')
+            .ok_or_else(|| Error::MalformedHash(sri.to_owned()))?;
+
+        let algorithm = HASH_ALGORITHMS
+            .iter()
+            .find(|(candidate, _)| candidate.eq_ignore_ascii_case(alg))
+            .map(|(_, browser)| *browser)
+            .ok_or_else(|| Error::UnknownHashAlgorithm(alg.to_owned()))?;
+
+        let value = BASE64
+            .decode(digest)
+            .or_else(|_| BASE64_UNPADDED.decode(digest))
+            .or_else(|_| BASE64_URLSAFE.decode(digest))
+            .map_err(|_| Error::MalformedHash(sri.to_owned()))?;
+
+        Ok(Self { algorithm, value })
+    }
+
+    /// Format a whole set for publication: SRI tokens separated by spaces.
+    ///
+    /// This is what a browser needs during a rotation overlap — the served certificate plus any
+    /// staged or recently-retired ones, so that a page holding any current snapshot can connect.
+    pub fn set_to_sri(hashes: &[Self]) -> String {
+        hashes
+            .iter()
+            .map(Self::to_sri)
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    /// Parse a published set of space-separated SRI tokens.
+    ///
+    /// Every token must parse; a set that is partly unreadable is more dangerous than one that
+    /// fails loudly, since silently dropping a hash can make a device unreachable.
+    pub fn set_from_sri(sri: &str) -> Result<Vec<Self>, Error> {
+        sri.split_whitespace().map(Self::from_sri).collect()
+    }
+
     /// The digest as lowercase hex.
     ///
-    /// Convenient for handing to a browser, which wants the raw bytes:
-    ///
-    /// ```js
-    /// Uint8Array.from(hex.match(/../g).map((b) => parseInt(b, 16)))
-    /// ```
+    /// [`CertHash::to_sri`] is the preferred form; this is here for systems that already speak hex.
     pub fn to_hex(&self) -> String {
         let mut out = String::with_capacity(self.value.len() * 2);
         for byte in &self.value {
@@ -275,9 +368,17 @@ impl CertHash {
     }
 }
 
+impl std::str::FromStr for CertHash {
+    type Err = Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::from_sri(s)
+    }
+}
+
 impl std::fmt::Display for CertHash {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}:{}", self.algorithm, self.to_hex())
+        f.write_str(&self.to_sri())
     }
 }
 
@@ -851,6 +952,12 @@ pub enum Error {
 
     #[error("key is not usable with any supported signature scheme")]
     UnsupportedKey,
+
+    #[error("malformed certificate hash: {0:?}")]
+    MalformedHash(String),
+
+    #[error("unknown hash algorithm: {0:?}")]
+    UnknownHashAlgorithm(String),
 
     #[error("validity of {0} is too long: browsers require under {MAX_VALIDITY}")]
     ValidityTooLong(Duration),
