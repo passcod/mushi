@@ -26,7 +26,9 @@ jobs:
       fail-fast: false
       matrix:
         settings:
-          - host: macos-13
+          # Intel macOS. macos-13 was retired in December 2025; this label lasts until Aug 2027,
+          # after which GitHub has no x86_64 macOS at all.
+          - host: macos-15-intel
             target: x86_64-apple-darwin
             build: npm run build -- --target x86_64-apple-darwin
           - host: windows-latest
@@ -142,7 +144,7 @@ jobs:
       fail-fast: false
       matrix:
         settings:
-          - host: macos-13
+          - host: macos-15-intel
             target: universal-apple-darwin
           - host: macos-latest
             target: universal-apple-darwin

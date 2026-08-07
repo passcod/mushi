@@ -21,7 +21,9 @@ jobs:
           - test
           - clippy
         host:
-          - macos-13
+          # Intel macOS. macos-13 was retired in December 2025; this label lasts until Aug 2027,
+          # after which GitHub has no x86_64 macOS at all.
+          - macos-15-intel
           - macos-latest
           - windows-latest
           - ubuntu-latest
