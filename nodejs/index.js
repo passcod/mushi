@@ -310,12 +310,14 @@ if (!nativeBinding) {
   throw new Error(`Failed to load native binding`)
 }
 
-const { EndpointKey, Allower, Endpoint, Session, RecvStream, SendStream, BidiStream } = nativeBinding
+const { Identity, Certificate, Server, Request, Session, RecvStream, SendStream, BidiStream, millisUntilExpiry } = nativeBinding
 
-module.exports.EndpointKey = EndpointKey
-module.exports.Allower = Allower
-module.exports.Endpoint = Endpoint
+module.exports.Identity = Identity
+module.exports.Certificate = Certificate
+module.exports.Server = Server
+module.exports.Request = Request
 module.exports.Session = Session
 module.exports.RecvStream = RecvStream
 module.exports.SendStream = SendStream
 module.exports.BidiStream = BidiStream
+module.exports.millisUntilExpiry = millisUntilExpiry

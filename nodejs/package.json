@@ -1,9 +1,9 @@
 {
   "name": "mushi",
   "version": "0.0.12",
-  "description": "Point-to-point QUIC networking with application-defined mutual authentication",
+  "description": "WebTransport server for browsers, authenticated by certificate hash instead of web PKI",
   "repository": "https://github.com/passcod/mushi",
-  "author": "Félix Saparelli <felix@passcod.name>",
+  "author": "F\u00e9lix Saparelli <felix@passcod.name>",
   "license": "Apache-2.0 OR MIT",
   "main": "index.js",
   "types": "index.d.ts",
