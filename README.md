@@ -16,7 +16,7 @@ to send a single message down a new uni stream, and then discard it. In my opini
 QUIC, at a security level, is "just" TLS, so you can use all kinds of existing topologies
 to deal with this. You can use publicly trusted web certificates (thereafter, "WebPKI"),
 you can use self-signed certificates, or private certificate authorities, or even do the
-new-fangled SPKI-based RFC 5370? scheme. You can do mutual TLS, always or on option.
+new-fangled SPKI-based [RFC 7250] scheme. You can do mutual TLS, always or on option.
 
 However, on the Web, you're restricted to HTTPS over WebPKI, with a narrow localhost
 exemption. Every new and powerful Web technology has to be served from a Secure Origin
@@ -51,6 +51,9 @@ Mushi thus provides **adapters** that _mush_ other protocols into WT.
 You can take your existing HTTP server, re-expose it over WT, and on the Web side, you
 can use native `fetch()` to talk to it. The client part is tiny and not a WASM blob.
 
+[WebTransport]: https://developer.mozilla.org/en-US/docs/Web/API/WebTransport_API
+[RFC 7250]: https://www.rfc-editor.org/info/rfc7250/
+
 ## How do I use this?
 
 Mushi is [a Rust crate][lib-rust] ([docs][docs-rust]), with some foreign interfaces for
@@ -61,7 +64,6 @@ convenience:
 
 Other FFI is possible; enquire within.
 
-[WebTransport]: https://developer.mozilla.org/en-US/docs/Web/API/WebTransport_API
 [lib-rust]: https://lib.rs/crate/mushi
 [docs-rust]: https://docs.rs/mushi
 [lib-node]: https://www.npmjs.com/package/mushi
